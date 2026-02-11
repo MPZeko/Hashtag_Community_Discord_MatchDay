@@ -33,7 +33,7 @@ jobs:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           TEAM_ID: ${{ vars.TEAM_ID || '1186081' }}
           PREMATCH_WINDOW_MINUTES: ${{ vars.PREMATCH_WINDOW_MINUTES || '120' }}
-        run: python bot/matchday_bot.py
+        run: python tests/test_matchday_bot.py
 
       - name: Save state cache
         uses: actions/cache/save@v4
