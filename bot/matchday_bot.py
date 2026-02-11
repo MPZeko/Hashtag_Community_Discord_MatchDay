@@ -12,18 +12,26 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
+from zoneinfo import ZoneInfo
 
+# FotMob team endpoint used to retrieve fixtures and match metadata.
 FOTMOB_TEAM_FIXTURES_URL = "https://www.fotmob.com/api/teams"
+# Local file used to persist already-posted event IDs.
 STATE_FILE = Path(".state/posted_events.json")
+# All kickoff times are rendered in London time for consistency.
+LONDON_TZ = ZoneInfo("Europe/London")
 
 
 @dataclass(frozen=True)
 class MatchEvent:
+    """Represents one Discord post candidate."""
+
     event_id: str
     message: str
 
 
 def get_env(name: str, default: str | None = None) -> str:
+    """Read environment variable or raise if a required value is missing."""
     value = os.getenv(name, default)
     if value is None:
         raise RuntimeError(f"Missing required environment variable: {name}")
@@ -31,6 +39,7 @@ def get_env(name: str, default: str | None = None) -> str:
 
 
 def env_as_bool(name: str, default: bool = False) -> bool:
+    """Parse an environment variable into a boolean."""
     raw = os.getenv(name)
     if raw is None:
         return default
@@ -38,6 +47,7 @@ def env_as_bool(name: str, default: bool = False) -> bool:
 
 
 def load_state(path: Path = STATE_FILE) -> set[str]:
+    """Load previously posted event IDs from disk."""
     if not path.exists():
         return set()
     data = json.loads(path.read_text(encoding="utf-8"))
@@ -45,11 +55,16 @@ def load_state(path: Path = STATE_FILE) -> set[str]:
 
 
 def save_state(event_ids: set[str], path: Path = STATE_FILE) -> None:
+    """Persist posted event IDs to disk to prevent duplicate notifications."""
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(sorted(event_ids), indent=2), encoding="utf-8")
 
 
 def _request_json(url: str, params: dict[str, Any] | None = None, body: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Perform a GET/POST HTTP request and return decoded JSON.
+
+    Returns an empty dict for empty bodies (e.g. Discord webhook 204 responses).
+    """
     full_url = f"{url}?{urlencode(params)}" if params else url
     payload = None if body is None else json.dumps(body).encode("utf-8")
 
@@ -79,22 +94,60 @@ def _request_json(url: str, params: dict[str, Any] | None = None, body: dict[str
 
 
 def fetch_team_fixtures(team_id: int) -> dict[str, Any]:
-    return _request_json(FOTMOB_TEAM_FIXTURES_URL, params={"id": team_id})
+    """Fetch team payload from FotMob using parameters that improve fixture availability."""
+    return _request_json(
+        FOTMOB_TEAM_FIXTURES_URL,
+        params={
+            "id": team_id,
+            "timezone": "Europe/London",
+            "ccode3": "GBR",
+        },
+    )
+
+
+def _pick_match_obj(item: dict[str, Any]) -> dict[str, Any] | None:
+    """Extract a match object from different fixture shapes returned by FotMob."""
+    if "match" in item and isinstance(item["match"], dict):
+        return item["match"]
+    if "fixture" in item and isinstance(item["fixture"], dict):
+        return item["fixture"]
+    if "status" in item and isinstance(item["status"], dict):
+        return item
+    return None
 
 
 def parse_match_utc(match: dict[str, Any]) -> datetime:
-    return datetime.fromisoformat(match["status"]["utcTime"].replace("Z", "+00:00"))
+    """Parse match UTC timestamp from FotMob status field."""
+    status = match.get("status") or {}
+    utc_time = status.get("utcTime")
+    if not utc_time:
+        raise KeyError("Missing status.utcTime in match payload")
+    return datetime.fromisoformat(str(utc_time).replace("Z", "+00:00"))
 
 
 def team_display_name(match: dict[str, Any], team_id: int) -> tuple[str, str]:
-    home = match["home"]
-    away = match["away"]
-    if int(home["id"]) == team_id:
-        return home["name"], away["name"]
-    return away["name"], home["name"]
+    """Return (tracked team, opponent) names based on home/away IDs."""
+    home = match.get("home") or {}
+    away = match.get("away") or {}
+    home_id = home.get("id")
+
+    if home_id is not None and int(home_id) == team_id:
+        return home.get("name", "Hashtag United"), away.get("name", "Unknown opponent")
+
+    away_id = away.get("id")
+    if away_id is not None and int(away_id) == team_id:
+        return away.get("name", "Hashtag United"), home.get("name", "Unknown opponent")
+
+    return home.get("name", "Hashtag United"), away.get("name", "Unknown opponent")
 
 
 def match_score(match: dict[str, Any]) -> str:
+    """Build a printable score string from status.scoreStr or home/away numeric values."""
+    status = match.get("status") or {}
+    score_str = status.get("scoreStr")
+    if score_str:
+        return str(score_str)
+
     home_score = match.get("home", {}).get("score")
     away_score = match.get("away", {}).get("score")
     if home_score is None or away_score is None:
@@ -103,90 +156,111 @@ def match_score(match: dict[str, Any]) -> str:
 
 
 def build_events(fixtures: dict[str, Any], team_id: int, prematch_window_minutes: int) -> list[MatchEvent]:
+    """Convert FotMob payload into Discord-ready match events."""
     now = datetime.now(timezone.utc)
+    # Only inspect recent/live/near-future matches to avoid noisy history/far-future fixtures.
     lower = now - timedelta(hours=4)
     upper = now + timedelta(hours=24)
     prematch_threshold = now + timedelta(minutes=prematch_window_minutes)
 
     events: list[MatchEvent] = []
-    all_matches = fixtures.get("fixtures", {}).get("allFixtures", {}).get("fixtures", [])
+    fixture_items = fixtures.get("fixtures", {}).get("allFixtures", {}).get("fixtures", [])
 
-    for wrapper in all_matches:
-        match = wrapper.get("match")
+    for item in fixture_items:
+        match = _pick_match_obj(item)
         if not match:
             continue
 
-        match_time = parse_match_utc(match)
+        status = match.get("status") or {}
+        # Skip entries that do not include timing/status details.
+        if not status.get("utcTime"):
+            continue
+
+        try:
+            match_time = parse_match_utc(match)
+        except KeyError:
+            continue
+
         if not (lower <= match_time <= upper):
             continue
 
         hashtag_name, opponent_name = team_display_name(match, team_id)
         tournament = match.get("tournament", {}).get("name", "Unknown competition")
         round_name = match.get("roundName") or ""
-        status = match.get("status", {})
         started = bool(status.get("started"))
         finished = bool(status.get("finished"))
         cancelled = bool(status.get("cancelled"))
         reason = status.get("reason", {})
         reason_code = reason.get("short") or reason.get("long") or ""
-        match_id = str(match.get("id"))
+        # Fallback to other IDs if nested match ID is missing.
+        match_id = str(match.get("id") or item.get("id") or item.get("matchId") or "unknown")
         score = match_score(match)
 
         if cancelled:
-            event_id = f"{match_id}:cancelled"
-            msg = (
-                f"❌ **{hashtag_name} vs {opponent_name}** is cancelled.\n"
-                f"🏆 {tournament} {round_name}".strip()
+            events.append(
+                MatchEvent(
+                    f"{match_id}:cancelled",
+                    (
+                        f"❌ **{hashtag_name} vs {opponent_name}** is cancelled.\n"
+                        f"🏆 {tournament} {round_name}"
+                    ).strip(),
+                )
             )
-            events.append(MatchEvent(event_id, msg))
             continue
 
         if not started and match_time <= prematch_threshold:
-            kickoff = match_time.astimezone().strftime("%d-%m-%Y %H:%M")
-            event_id = f"{match_id}:prematch"
-            msg = (
-                f"📣 **Match soon:** {hashtag_name} vs {opponent_name}\n"
-                f"🕒 Kickoff: {kickoff}\n"
-                f"🏆 {tournament} {round_name}".strip()
+            kickoff_london = match_time.astimezone(LONDON_TZ).strftime("%d-%m-%Y %H:%M")
+            events.append(
+                MatchEvent(
+                    f"{match_id}:prematch",
+                    (
+                        f"📣 **Match soon:** {hashtag_name} vs {opponent_name}\n"
+                        f"🕒 Kickoff (London): {kickoff_london}\n"
+                        f"🏆 {tournament} {round_name}"
+                    ).strip(),
+                )
             )
-            events.append(MatchEvent(event_id, msg))
             continue
 
         if started and not finished:
-            live_code = str(reason_code).upper()
-            if live_code == "HT":
-                event_id = f"{match_id}:halftime"
-                msg = (
-                    f"⏸️ **Half-time:** {hashtag_name} vs {opponent_name}\n"
-                    f"📊 Score: {score}"
+            if str(reason_code).upper() == "HT":
+                events.append(
+                    MatchEvent(
+                        f"{match_id}:halftime",
+                        f"⏸️ **Half-time:** {hashtag_name} vs {opponent_name}\n📊 Score: {score}",
+                    )
                 )
-                events.append(MatchEvent(event_id, msg))
             else:
-                event_id = f"{match_id}:live"
-                msg = (
-                    f"🔴 **Match is live:** {hashtag_name} vs {opponent_name}\n"
-                    f"📊 Live score: {score}"
+                events.append(
+                    MatchEvent(
+                        f"{match_id}:live",
+                        f"🔴 **Match is live:** {hashtag_name} vs {opponent_name}\n📊 Live score: {score}",
+                    )
                 )
-                events.append(MatchEvent(event_id, msg))
             continue
 
         if finished:
-            event_id = f"{match_id}:fulltime"
-            msg = (
-                f"✅ **Full-time:** {hashtag_name} vs {opponent_name}\n"
-                f"📊 Final score: {score}\n"
-                f"🏆 {tournament} {round_name}".strip()
+            events.append(
+                MatchEvent(
+                    f"{match_id}:fulltime",
+                    (
+                        f"✅ **Full-time:** {hashtag_name} vs {opponent_name}\n"
+                        f"📊 Final score: {score}\n"
+                        f"🏆 {tournament} {round_name}"
+                    ).strip(),
+                )
             )
-            events.append(MatchEvent(event_id, msg))
 
     return events
 
 
 def post_to_discord(webhook_url: str, message: str) -> None:
+    """Send a single message to Discord webhook."""
     _request_json(webhook_url, body={"content": message})
 
 
 def run() -> int:
+    """Main entry point for local runs and GitHub Actions."""
     dry_run = env_as_bool("DRY_RUN", default=False)
     webhook_url = os.getenv("DISCORD_WEBHOOK_URL")
     team_id = int(get_env("TEAM_ID", "1186081"))
@@ -196,6 +270,7 @@ def run() -> int:
     if not webhook_url and not dry_run:
         raise RuntimeError("Missing required environment variable: DISCORD_WEBHOOK_URL")
 
+    # Optional manual webhook smoke-test mode.
     if test_message:
         if dry_run:
             print(f"[DRY_RUN] Would post test message: {test_message}")
@@ -208,6 +283,7 @@ def run() -> int:
     events = build_events(fixtures, team_id, prematch_window_minutes)
 
     posted_event_ids = load_state()
+    # Filter out events already posted in earlier runs.
     new_events = [event for event in events if event.event_id not in posted_event_ids]
 
     if not new_events:

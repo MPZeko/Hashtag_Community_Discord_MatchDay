@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 from bot import matchday_bot
-from bot.matchday_bot import _request_json, build_events, env_as_bool
+from bot.matchday_bot import _pick_match_obj, _request_json, build_events, env_as_bool, match_score
 
 
 def _fixture(match):
@@ -80,12 +80,20 @@ class TestMatchDayBot(unittest.TestCase):
         events = build_events(fixtures, 1186081, prematch_window_minutes=120)
         self.assertTrue(any(event.event_id.endswith(":fulltime") for event in events))
 
-
-    def test_messages_are_in_english(self):
+    def test_messages_are_in_english_and_use_london_time_label(self):
         fixtures = _fixture(_base_match(minutes_from_now=30))
         events = build_events(fixtures, 1186081, prematch_window_minutes=120)
         prematch = next(event for event in events if event.event_id.endswith(":prematch"))
         self.assertIn("Match soon", prematch.message)
+        self.assertIn("Kickoff (London)", prematch.message)
+
+    def test_pick_match_obj_supports_multiple_shapes(self):
+        self.assertEqual(_pick_match_obj({"match": {"id": 1}}), {"id": 1})
+        self.assertEqual(_pick_match_obj({"fixture": {"id": 2}}), {"id": 2})
+        self.assertEqual(_pick_match_obj({"status": {"utcTime": "2026-01-01T12:00:00Z"}, "id": 3})["id"], 3)
+
+    def test_match_score_prefers_score_str(self):
+        self.assertEqual(match_score({"status": {"scoreStr": "2-1"}}), "2-1")
 
     def test_env_as_bool_true_values(self):
         os.environ["DRY_RUN"] = "true"

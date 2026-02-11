@@ -1,23 +1,25 @@
 # Hashtag United MatchDay Discord Bot
 
-Automatisk bot der henter kampdata fra FotMob for **Hashtag United** og poster opdateringer i en Discord kanal via webhook.
+Automated bot that fetches match data from FotMob for **Hashtag United** and posts updates to a Discord channel via webhook.
 
-## Funktioner
+## Features
 
-- Finder relevante kampe for hold-id `1186081` (Hashtag United)
-- Poster notifikationer for:
-  - kommende kamp (pre-match)
-  - kampstart (live)
-  - halftime
-  - slutresultat (fulltime)
-- Undgår duplikat-beskeder via lokal state-fil
-- Kan køres lokalt eller via GitHub Actions på et schedule
-- Discord-beskeder sendes på engelsk
+- Tracks fixtures for team id `1186081` (Hashtag United)
+- Sends notifications for:
+  - upcoming match (pre-match)
+  - match live
+  - half-time
+  - full-time
+  - cancelled matches
+- Prevents duplicate posts using a local state file
+- Can run locally or on a schedule via GitHub Actions
+- Discord messages are in English
+- Kickoff time is shown in London time (`Europe/London`)
 
-## Opsætning
+## Setup
 
-1. Opret en Discord webhook i den kanal, hvor opdateringer skal postes.
-2. Sæt miljøvariabler:
+1. Create a Discord webhook in the channel where updates should be posted.
+2. Set environment variables:
 
 ```bash
 export DISCORD_WEBHOOK_URL="https://discord.com/api/webhooks/..."
@@ -25,80 +27,89 @@ export TEAM_ID="1186081"  # optional
 export PREMATCH_WINDOW_MINUTES="120"  # optional
 ```
 
-3. Installer afhængigheder:
+3. Install dependencies:
 
 ```bash
 pip install -r requirements.txt
 ```
 
-4. Kør scriptet:
+4. Run the bot:
 
 ```bash
 python bot/matchday_bot.py
 ```
 
-## Sådan tester du at botten virker
+## How to test the bot
 
-### 1) Kør automatiske tests lokalt
+### 1) Run automated tests locally
 
 ```bash
 python -m unittest discover -s tests -v
 python -m py_compile bot/matchday_bot.py tests/test_matchday_bot.py
 ```
 
-Hvis begge kommandoer lykkes, er den grundlæggende event-logik og syntaks OK.
+If both commands pass, core event logic and syntax are valid.
 
-### 2) Lav en hurtig funktionel test mod Discord
+### 2) Quick functional test against Discord
 
-1. Opret en test-kanal i Discord og lav en webhook til kanalen.
-2. Sæt webhook-variablen:
+1. Create a test channel in Discord and create a webhook for that channel.
+2. Set the webhook variable:
 
 ```bash
 export DISCORD_WEBHOOK_URL="https://discord.com/api/webhooks/..."
 ```
 
-3. Kør botten:
+3. Run the bot:
 
 ```bash
 python bot/matchday_bot.py
 ```
 
-4. Tjek at der kommer en besked i test-kanalen (hvis der findes en relevant kamp i tidsvinduet).
-5. Kør kommandoen igen med det samme. Der bør normalt ikke komme dublet-beskeder, fordi botten gemmer allerede postede events i `.state/posted_events.json`.
+4. Check that a message appears in your test channel (if a relevant match exists in the current time window).
+5. Run the command again immediately. You should normally not get duplicate posts, because posted events are stored in `.state/posted_events.json`.
 
-### 3) Test via GitHub Actions (inkl. direkte post i Discord)
+### 3) Test via GitHub Actions (including direct Discord post)
 
-Når du starter workflowet manuelt (**Run workflow**), kan du vælge to testmåder:
+When starting the workflow manually (**Run workflow**), you can use two test modes:
 
-**A. Sikker test (ingen post):**
+**A. Safe test (no post):**
 - `dry_run = true`
 
-**B. Direkte test-post i Discord:**
+**B. Direct test post to Discord:**
 - `dry_run = false`
 - `send_test_message = true`
-- valgfrit: tilpas `test_message`
+- optionally customize `test_message`
 
-Med `send_test_message = true` sender workflowet én direkte besked til webhooken, så du kan verificere med det samme, at GitHub Actions kan poste i kanalen.
+With `send_test_message = true`, the workflow posts one direct message to your webhook, so you can immediately verify that GitHub Actions can post in the channel.
 
-Tip: Discord webhook svarer ofte med HTTP `204 No Content` ved succes. Botten håndterer dette automatisk.
+Tip: Discord webhooks often return HTTP `204 No Content` on success. The bot handles this correctly.
 
-Hvis du er i tvivl om dataadgang, sæt `debug_fotmob_payload = true` ved manuel kørsel. Så logger workflowet sample-data (fx kamp-id, holdnavne, status, score) direkte fra FotMob før botten kører.
+If you are unsure about data access, set `debug_fotmob_payload = true` in a manual workflow run. This logs sample data (for example match id, team names, status, and score) directly from FotMob before the bot runs.
 
-## GitHub Actions (automatisk drift)
+## GitHub Actions (automated operation)
 
-Workflowet i `.github/workflows/fotmob-discord.yml` kører hvert 10. minut.
+The workflow in `.github/workflows/fotmob-discord.yml` runs every 10 minutes.
 
-Tilføj repository secret:
+Add repository secret:
 
 - `DISCORD_WEBHOOK_URL`
 
-Valgfri repository variables:
+Optional repository variables:
 
 - `TEAM_ID`
 - `PREMATCH_WINDOW_MINUTES`
 
-Manuel `workflow_dispatch` understøtter inputs: `team_id`, `prematch_window_minutes`, `dry_run`, `send_test_message`, `test_message`, `debug_fotmob_payload`.
+Manual `workflow_dispatch` inputs:
 
-## Bemærkninger
+- `team_id`
+- `prematch_window_minutes`
+- `dry_run`
+- `send_test_message`
+- `test_message`
+- `debug_fotmob_payload`
 
-FotMob har ingen officiel public API til dette setup. Scriptet bruger deres åbne JSON-endpoint, som kan ændre sig over tid.
+## Notes
+
+FotMob does not provide an official public API for this setup. The bot uses an open JSON endpoint that may change over time.
+
+For better fixture compatibility, the bot calls the team endpoint with `timezone=Europe/London` and `ccode3=GBR`, and parses multiple possible fixture shapes.
