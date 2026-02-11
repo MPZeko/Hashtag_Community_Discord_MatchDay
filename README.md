@@ -82,6 +82,8 @@ Med `send_test_message = true` sender workflowet én direkte besked til webhooke
 
 Tip: Discord webhook svarer ofte med HTTP `204 No Content` ved succes. Botten håndterer dette automatisk.
 
+Hvis du er i tvivl om dataadgang, sæt `debug_fotmob_payload = true` ved manuel kørsel. Så logger workflowet sample-data (fx kamp-id, holdnavne, status, score) direkte fra FotMob før botten kører.
+
 ## GitHub Actions (automatisk drift)
 
 Workflowet i `.github/workflows/fotmob-discord.yml` kører hvert 10. minut.
@@ -95,7 +97,7 @@ Valgfri repository variables:
 - `TEAM_ID`
 - `PREMATCH_WINDOW_MINUTES`
 
-Manuel `workflow_dispatch` understøtter inputs: `team_id`, `prematch_window_minutes`, `dry_run`, `send_test_message`, `test_message`.
+Manuel `workflow_dispatch` understøtter inputs: `team_id`, `prematch_window_minutes`, `dry_run`, `send_test_message`, `test_message`, `debug_fotmob_payload`.
 
 ## Bemærkninger
 
