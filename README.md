@@ -12,6 +12,7 @@ Automatisk bot der henter kampdata fra FotMob for **Hashtag United** og poster o
   - slutresultat (fulltime)
 - Undgår duplikat-beskeder via lokal state-fil
 - Kan køres lokalt eller via GitHub Actions på et schedule
+- Discord-beskeder sendes på engelsk
 
 ## Opsætning
 
@@ -78,6 +79,8 @@ Når du starter workflowet manuelt (**Run workflow**), kan du vælge to testmåd
 - valgfrit: tilpas `test_message`
 
 Med `send_test_message = true` sender workflowet én direkte besked til webhooken, så du kan verificere med det samme, at GitHub Actions kan poste i kanalen.
+
+Tip: Discord webhook svarer ofte med HTTP `204 No Content` ved succes. Botten håndterer dette automatisk.
 
 ## GitHub Actions (automatisk drift)
 

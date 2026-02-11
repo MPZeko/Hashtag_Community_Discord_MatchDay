@@ -65,7 +65,15 @@ def _request_json(url: str, params: dict[str, Any] | None = None, body: dict[str
 
     try:
         with urlopen(req, timeout=20) as response:
-            return json.loads(response.read().decode("utf-8"))
+            raw = response.read()
+            if not raw:
+                return {}
+
+            decoded = raw.decode("utf-8").strip()
+            if not decoded:
+                return {}
+
+            return json.loads(decoded)
     except (HTTPError, URLError) as exc:
         raise RuntimeError(f"HTTP request failed: {exc}") from exc
 
@@ -113,7 +121,7 @@ def build_events(fixtures: dict[str, Any], team_id: int, prematch_window_minutes
             continue
 
         hashtag_name, opponent_name = team_display_name(match, team_id)
-        tournament = match.get("tournament", {}).get("name", "Unknown tournament")
+        tournament = match.get("tournament", {}).get("name", "Unknown competition")
         round_name = match.get("roundName") or ""
         status = match.get("status", {})
         started = bool(status.get("started"))
@@ -127,7 +135,7 @@ def build_events(fixtures: dict[str, Any], team_id: int, prematch_window_minutes
         if cancelled:
             event_id = f"{match_id}:cancelled"
             msg = (
-                f"❌ **{hashtag_name} vs {opponent_name}** er aflyst.\n"
+                f"❌ **{hashtag_name} vs {opponent_name}** is cancelled.\n"
                 f"🏆 {tournament} {round_name}".strip()
             )
             events.append(MatchEvent(event_id, msg))
@@ -137,7 +145,7 @@ def build_events(fixtures: dict[str, Any], team_id: int, prematch_window_minutes
             kickoff = match_time.astimezone().strftime("%d-%m-%Y %H:%M")
             event_id = f"{match_id}:prematch"
             msg = (
-                f"📣 **Kamp snart:** {hashtag_name} vs {opponent_name}\n"
+                f"📣 **Match soon:** {hashtag_name} vs {opponent_name}\n"
                 f"🕒 Kickoff: {kickoff}\n"
                 f"🏆 {tournament} {round_name}".strip()
             )
@@ -149,15 +157,15 @@ def build_events(fixtures: dict[str, Any], team_id: int, prematch_window_minutes
             if live_code == "HT":
                 event_id = f"{match_id}:halftime"
                 msg = (
-                    f"⏸️ **Halvleg:** {hashtag_name} vs {opponent_name}\n"
-                    f"📊 Stilling: {score}"
+                    f"⏸️ **Half-time:** {hashtag_name} vs {opponent_name}\n"
+                    f"📊 Score: {score}"
                 )
                 events.append(MatchEvent(event_id, msg))
             else:
                 event_id = f"{match_id}:live"
                 msg = (
-                    f"🔴 **Kampen er i gang:** {hashtag_name} vs {opponent_name}\n"
-                    f"📊 Live-stilling: {score}"
+                    f"🔴 **Match is live:** {hashtag_name} vs {opponent_name}\n"
+                    f"📊 Live score: {score}"
                 )
                 events.append(MatchEvent(event_id, msg))
             continue
@@ -165,8 +173,8 @@ def build_events(fixtures: dict[str, Any], team_id: int, prematch_window_minutes
         if finished:
             event_id = f"{match_id}:fulltime"
             msg = (
-                f"✅ **Slut:** {hashtag_name} vs {opponent_name}\n"
-                f"📊 Slutresultat: {score}\n"
+                f"✅ **Full-time:** {hashtag_name} vs {opponent_name}\n"
+                f"📊 Final score: {score}\n"
                 f"🏆 {tournament} {round_name}".strip()
             )
             events.append(MatchEvent(event_id, msg))

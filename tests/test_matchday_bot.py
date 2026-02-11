@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 from bot import matchday_bot
-from bot.matchday_bot import build_events, env_as_bool
+from bot.matchday_bot import _request_json, build_events, env_as_bool
 
 
 def _fixture(match):
@@ -31,6 +31,20 @@ def _base_match(status_overrides=None, minutes_from_now=60):
         "tournament": {"name": "League"},
         "roundName": "Round 1",
     }
+
+
+class _DummyResponse:
+    def __init__(self, payload: bytes):
+        self.payload = payload
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def read(self):
+        return self.payload
 
 
 class TestMatchDayBot(unittest.TestCase):
@@ -66,6 +80,13 @@ class TestMatchDayBot(unittest.TestCase):
         events = build_events(fixtures, 1186081, prematch_window_minutes=120)
         self.assertTrue(any(event.event_id.endswith(":fulltime") for event in events))
 
+
+    def test_messages_are_in_english(self):
+        fixtures = _fixture(_base_match(minutes_from_now=30))
+        events = build_events(fixtures, 1186081, prematch_window_minutes=120)
+        prematch = next(event for event in events if event.event_id.endswith(":prematch"))
+        self.assertIn("Match soon", prematch.message)
+
     def test_env_as_bool_true_values(self):
         os.environ["DRY_RUN"] = "true"
         self.assertTrue(env_as_bool("DRY_RUN"))
@@ -87,6 +108,11 @@ class TestMatchDayBot(unittest.TestCase):
 
         os.environ.pop("DRY_RUN", None)
         os.environ.pop("DISCORD_TEST_MESSAGE", None)
+
+    def test_request_json_handles_empty_response_body(self):
+        with patch("bot.matchday_bot.urlopen", return_value=_DummyResponse(b"")):
+            data = _request_json("https://example.com", body={"content": "hello"})
+        self.assertEqual(data, {})
 
 
 if __name__ == "__main__":
