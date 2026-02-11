@@ -1,0 +1,115 @@
+# Hashtag United MatchDay Discord Bot
+
+Automated bot that fetches match data from FotMob for **Hashtag United** and posts updates to a Discord channel via webhook.
+
+## Features
+
+- Tracks fixtures for team id `1186081` (Hashtag United)
+- Sends notifications for:
+  - upcoming match (pre-match)
+  - match live
+  - half-time
+  - full-time
+  - cancelled matches
+- Prevents duplicate posts using a local state file
+- Can run locally or on a schedule via GitHub Actions
+- Discord messages are in English
+- Kickoff time is shown in London time (`Europe/London`)
+
+## Setup
+
+1. Create a Discord webhook in the channel where updates should be posted.
+2. Set environment variables:
+
+```bash
+export DISCORD_WEBHOOK_URL="https://discord.com/api/webhooks/..."
+export TEAM_ID="1186081"  # optional
+export PREMATCH_WINDOW_MINUTES="120"  # optional
+```
+
+3. Install dependencies:
+
+```bash
+pip install -r requirements.txt
+```
+
+4. Run the bot:
+
+```bash
+python bot/matchday_bot.py
+```
+
+## How to test the bot
+
+### 1) Run automated tests locally
+
+```bash
+python -m unittest discover -s tests -v
+python -m py_compile bot/matchday_bot.py tests/test_matchday_bot.py
+```
+
+If both commands pass, core event logic and syntax are valid.
+
+### 2) Quick functional test against Discord
+
+1. Create a test channel in Discord and create a webhook for that channel.
+2. Set the webhook variable:
+
+```bash
+export DISCORD_WEBHOOK_URL="https://discord.com/api/webhooks/..."
+```
+
+3. Run the bot:
+
+```bash
+python bot/matchday_bot.py
+```
+
+4. Check that a message appears in your test channel (if a relevant match exists in the current time window).
+5. Run the command again immediately. You should normally not get duplicate posts, because posted events are stored in `.state/posted_events.json`.
+
+### 3) Test via GitHub Actions (including direct Discord post)
+
+When starting the workflow manually (**Run workflow**), you can use two test modes:
+
+**A. Safe test (no post):**
+- `dry_run = true`
+
+**B. Direct test post to Discord:**
+- `dry_run = false`
+- `send_test_message = true`
+- optionally customize `test_message`
+
+With `send_test_message = true`, the workflow posts one direct message to your webhook, so you can immediately verify that GitHub Actions can post in the channel.
+
+Tip: Discord webhooks often return HTTP `204 No Content` on success. The bot handles this correctly.
+
+If you are unsure about data access, set `debug_fotmob_payload = true` in a manual workflow run. This logs sample data (for example match id, team names, status, and score) directly from FotMob before the bot runs.
+
+## GitHub Actions (automated operation)
+
+The workflow in `.github/workflows/fotmob-discord.yml` runs every 10 minutes.
+
+Add repository secret:
+
+- `DISCORD_WEBHOOK_URL`
+
+Optional repository variables:
+
+- `TEAM_ID`
+- `PREMATCH_WINDOW_MINUTES`
+
+Manual `workflow_dispatch` inputs:
+
+- `team_id`
+- `prematch_window_minutes`
+- `dry_run`
+- `send_test_message`
+- `test_message`
+- `debug_fotmob_payload`
+
+## Notes
+
+FotMob does not provide an official public API for this setup. The bot uses an open JSON endpoint that may change over time.
+
+For better fixture compatibility, the bot calls the team endpoint with `timezone=Europe/London` and `ccode3=GBR`, and parses multiple possible fixture shapes.

@@ -1,0 +1,115 @@
+name: FotMob Discord Match Updates
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+    inputs:
+      team_id:
+        description: "FotMob team id"
+        required: false
+        default: "1186081"
+      prematch_window_minutes:
+        description: "Minutes before kickoff to send pre-match updates"
+        required: false
+        default: "120"
+      dry_run:
+        description: "Run without posting to Discord (prints what would be posted)"
+        required: false
+        type: boolean
+        default: true
+      send_test_message:
+        description: "Send one direct test message to Discord (ignores match filtering)"
+        required: false
+        type: boolean
+        default: false
+      test_message:
+        description: "Custom Discord test message"
+        required: false
+        default: "🧪 GitHub Actions test: webhook works for Hashtag United bot"
+      debug_fotmob_payload:
+        description: "Print sample FotMob payload fields in logs"
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  post-updates:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Debug FotMob payload
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.debug_fotmob_payload }}
+        env:
+          TEAM_ID: ${{ github.event_name == 'workflow_dispatch' && inputs.team_id || vars.TEAM_ID || '1186081' }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from urllib.parse import urlencode
+          from urllib.request import Request, urlopen
+
+          team_id = os.getenv("TEAM_ID", "1186081")
+          url = f"https://www.fotmob.com/api/teams?{urlencode({'id': team_id})}"
+          req = Request(url, headers={"User-Agent": "Mozilla/5.0"})
+
+          with urlopen(req, timeout=30) as r:
+              data = json.loads(r.read().decode("utf-8"))
+
+          fixtures = data.get("fixtures", {}).get("allFixtures", {}).get("fixtures", [])
+          print(f"team_id={team_id}")
+          print(f"top_level_keys={sorted(list(data.keys()))[:20]}")
+          print(f"fixtures_count={len(fixtures)}")
+
+          if fixtures:
+              match = fixtures[0].get("match", {})
+              sample = {
+                  "id": match.get("id"),
+                  "home": match.get("home", {}).get("name"),
+                  "away": match.get("away", {}).get("name"),
+                  "utcTime": match.get("status", {}).get("utcTime"),
+                  "started": match.get("status", {}).get("started"),
+                  "finished": match.get("status", {}).get("finished"),
+                  "cancelled": match.get("status", {}).get("cancelled"),
+                  "reason_short": match.get("status", {}).get("reason", {}).get("short"),
+                  "tournament": match.get("tournament", {}).get("name"),
+                  "roundName": match.get("roundName"),
+                  "home_score": match.get("home", {}).get("score"),
+                  "away_score": match.get("away", {}).get("score"),
+              }
+              print("sample_match=", json.dumps(sample, ensure_ascii=False))
+          PY
+
+      - name: Restore state cache
+        uses: actions/cache@v4
+        with:
+          path: .state/posted_events.json
+          key: fotmob-state-${{ github.repository }}
+
+      - name: Run matchday bot
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          TEAM_ID: ${{ github.event_name == 'workflow_dispatch' && inputs.team_id || vars.TEAM_ID || '1186081' }}
+          PREMATCH_WINDOW_MINUTES: ${{ github.event_name == 'workflow_dispatch' && inputs.prematch_window_minutes || vars.PREMATCH_WINDOW_MINUTES || '120' }}
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || 'false' }}
+          DISCORD_TEST_MESSAGE: ${{ github.event_name == 'workflow_dispatch' && inputs.send_test_message && inputs.test_message || '' }}
+        run: python bot/matchday_bot.py
+
+      - name: Save state cache
+        uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: .state/posted_events.json
+          key: fotmob-state-${{ github.repository }}
