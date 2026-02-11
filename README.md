@@ -86,6 +86,37 @@ Tip: Discord webhooks often return HTTP `204 No Content` on success. The bot han
 
 If you are unsure about data access, set `debug_fotmob_payload = true` in a manual workflow run. This logs sample data (for example match id, team names, status, and score) directly from FotMob before the bot runs.
 
+
+### 4) Verify FotMob data is actually being parsed
+
+Use a manual workflow run with:
+
+- `dry_run = true`
+- `debug_fotmob_payload = true`
+- `send_test_message = false`
+
+Then inspect logs from **Debug FotMob payload**:
+
+- `fixtures_count` should be greater than `0`
+- `parsed_match_objects` should be greater than `0`
+- `parsed_matches_with_utcTime` should be greater than `0`
+- `sample_match` should include fields like `home`, `away`, `utcTime`
+
+If `fixtures_count > 0` but `parsed_matches_with_utcTime = 0`, FotMob changed shape and you should use the printed raw fixture sample to update parsing.
+
+### 5) Verify that data reaches Discord
+
+Recommended two-step check:
+
+1. **Webhook connectivity test**
+   - Run workflow with `dry_run = false` and `send_test_message = true`
+   - You should see `Posted test message to Discord.` in logs, and a test message in the Discord channel.
+
+2. **Real FotMob event test**
+   - Run workflow with `dry_run = false`, `send_test_message = false`, `debug_fotmob_payload = true`
+   - If a match event is within the bot's time window, logs should show `Posted: <event_id>` and message appears in Discord.
+   - If logs show `No new events to post.`, the bot is healthy but there were no new qualifying events at that run time.
+
 ## GitHub Actions (automated operation)
 
 The workflow in `.github/workflows/fotmob-discord.yml` runs every 10 minutes.

@@ -61,35 +61,59 @@ jobs:
           from urllib.parse import urlencode
           from urllib.request import Request, urlopen
 
+          def pick_match_obj(item):
+              if isinstance(item.get("match"), dict):
+                  return item["match"]
+              if isinstance(item.get("fixture"), dict):
+                  return item["fixture"]
+              if isinstance(item.get("status"), dict):
+                  return item
+              return None
+
           team_id = os.getenv("TEAM_ID", "1186081")
-          url = f"https://www.fotmob.com/api/teams?{urlencode({'id': team_id})}"
+          url = "https://www.fotmob.com/api/teams?" + urlencode(
+              {
+                  "id": team_id,
+                  "timezone": "Europe/London",
+                  "ccode3": "GBR",
+              }
+          )
           req = Request(url, headers={"User-Agent": "Mozilla/5.0"})
 
           with urlopen(req, timeout=30) as r:
               data = json.loads(r.read().decode("utf-8"))
 
           fixtures = data.get("fixtures", {}).get("allFixtures", {}).get("fixtures", [])
+          parsed = [pick_match_obj(x) for x in fixtures]
+          parsed = [m for m in parsed if isinstance(m, dict)]
+          with_utc = [m for m in parsed if (m.get("status") or {}).get("utcTime")]
+
           print(f"team_id={team_id}")
           print(f"top_level_keys={sorted(list(data.keys()))[:20]}")
           print(f"fixtures_count={len(fixtures)}")
+          print(f"parsed_match_objects={len(parsed)}")
+          print(f"parsed_matches_with_utcTime={len(with_utc)}")
 
-          if fixtures:
-              match = fixtures[0].get("match", {})
+          if with_utc:
+              match = with_utc[0]
+              status = match.get("status") or {}
               sample = {
                   "id": match.get("id"),
-                  "home": match.get("home", {}).get("name"),
-                  "away": match.get("away", {}).get("name"),
-                  "utcTime": match.get("status", {}).get("utcTime"),
-                  "started": match.get("status", {}).get("started"),
-                  "finished": match.get("status", {}).get("finished"),
-                  "cancelled": match.get("status", {}).get("cancelled"),
-                  "reason_short": match.get("status", {}).get("reason", {}).get("short"),
-                  "tournament": match.get("tournament", {}).get("name"),
+                  "home": (match.get("home") or {}).get("name"),
+                  "away": (match.get("away") or {}).get("name"),
+                  "utcTime": status.get("utcTime"),
+                  "started": status.get("started"),
+                  "finished": status.get("finished"),
+                  "cancelled": status.get("cancelled"),
+                  "reason_short": (status.get("reason") or {}).get("short"),
+                  "scoreStr": status.get("scoreStr"),
+                  "tournament": (match.get("tournament") or {}).get("name"),
                   "roundName": match.get("roundName"),
-                  "home_score": match.get("home", {}).get("score"),
-                  "away_score": match.get("away", {}).get("score"),
               }
               print("sample_match=", json.dumps(sample, ensure_ascii=False))
+          elif fixtures:
+              print("No parseable match object with utcTime found. First raw fixture item:")
+              print(json.dumps(fixtures[0], ensure_ascii=False)[:1500])
           PY
 
       - name: Restore state cache
