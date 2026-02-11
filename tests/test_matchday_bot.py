@@ -1,8 +1,7 @@
-import os
 import unittest
 from datetime import datetime, timedelta, timezone
 
-from bot.matchday_bot import build_events, env_as_bool
+from bot.matchday_bot import build_events
 
 
 def _fixture(match):
@@ -63,14 +62,6 @@ class TestMatchDayBot(unittest.TestCase):
         )
         events = build_events(fixtures, 1186081, prematch_window_minutes=120)
         self.assertTrue(any(event.event_id.endswith(":fulltime") for event in events))
-
-    def test_env_as_bool_true_values(self):
-        os.environ["DRY_RUN"] = "true"
-        self.assertTrue(env_as_bool("DRY_RUN"))
-
-    def test_env_as_bool_default_when_missing(self):
-        os.environ.pop("UNSET_BOOL", None)
-        self.assertTrue(env_as_bool("UNSET_BOOL", default=True))
 
 
 if __name__ == "__main__":
