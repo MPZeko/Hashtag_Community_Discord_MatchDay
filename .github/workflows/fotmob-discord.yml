@@ -4,29 +4,6 @@ on:
   schedule:
     - cron: "*/10 * * * *"
   workflow_dispatch:
-    inputs:
-      team_id:
-        description: "FotMob team id"
-        required: false
-        default: "1186081"
-      prematch_window_minutes:
-        description: "Minutes before kickoff to send pre-match updates"
-        required: false
-        default: "120"
-      dry_run:
-        description: "Run without posting to Discord (prints what would be posted)"
-        required: false
-        type: boolean
-        default: true
-      send_test_message:
-        description: "Send one direct test message to Discord (ignores match filtering)"
-        required: false
-        type: boolean
-        default: false
-      test_message:
-        description: "Custom Discord test message"
-        required: false
-        default: "🧪 GitHub Actions test: webhook virker for Hashtag United bot"
 
 jobs:
   post-updates:
@@ -54,10 +31,6 @@ jobs:
       - name: Run matchday bot
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-          TEAM_ID: ${{ github.event_name == 'workflow_dispatch' && inputs.team_id || vars.TEAM_ID || '1186081' }}
-          PREMATCH_WINDOW_MINUTES: ${{ github.event_name == 'workflow_dispatch' && inputs.prematch_window_minutes || vars.PREMATCH_WINDOW_MINUTES || '120' }}
-          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || 'false' }}
-          DISCORD_TEST_MESSAGE: ${{ github.event_name == 'workflow_dispatch' && inputs.send_test_message && inputs.test_message || '' }}
           TEAM_ID: ${{ vars.TEAM_ID || '1186081' }}
           PREMATCH_WINDOW_MINUTES: ${{ vars.PREMATCH_WINDOW_MINUTES || '120' }}
         run: python bot/matchday_bot.py
