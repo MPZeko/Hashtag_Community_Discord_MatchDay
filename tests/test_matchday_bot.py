@@ -5,6 +5,10 @@ from unittest.mock import patch
 
 from bot import matchday_bot
 from bot.matchday_bot import build_events, env_as_bool
+import unittest
+from datetime import datetime, timedelta, timezone
+
+from bot.matchday_bot import build_events
 
 
 def _fixture(match):

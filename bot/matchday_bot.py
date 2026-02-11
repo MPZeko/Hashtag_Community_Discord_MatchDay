@@ -195,6 +195,9 @@ def run() -> int:
             post_to_discord(webhook_url, test_message)
             print("Posted test message to Discord.")
         return 0
+    webhook_url = get_env("DISCORD_WEBHOOK_URL")
+    team_id = int(get_env("TEAM_ID", "1186081"))
+    prematch_window_minutes = int(get_env("PREMATCH_WINDOW_MINUTES", "120"))
 
     fixtures = fetch_team_fixtures(team_id)
     events = build_events(fixtures, team_id, prematch_window_minutes)
@@ -217,6 +220,11 @@ def run() -> int:
     if not dry_run:
         save_state(posted_event_ids)
 
+        post_to_discord(webhook_url, event.message)
+        posted_event_ids.add(event.event_id)
+        print(f"Posted: {event.event_id}")
+
+    save_state(posted_event_ids)
     return 0
 
 
