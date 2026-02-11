@@ -90,7 +90,7 @@ def match_score(match: dict[str, Any]) -> str:
 def build_events(fixtures: dict[str, Any], team_id: int, prematch_window_minutes: int) -> list[MatchEvent]:
     now = datetime.now(timezone.utc)
     lower = now - timedelta(hours=4)
-    upper = now + timedelta(hours=24)
+    upper = now + timedelta(hours=120)
     prematch_threshold = now + timedelta(minutes=prematch_window_minutes)
 
     events: list[MatchEvent] = []
