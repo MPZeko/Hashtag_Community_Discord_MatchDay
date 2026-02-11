@@ -58,6 +58,7 @@ jobs:
           python - <<'PY'
           import json
           import os
+          from datetime import datetime, timezone, timedelta
           from urllib.parse import urlencode
           from urllib.request import Request, urlopen
 
@@ -69,6 +70,15 @@ jobs:
               if isinstance(item.get("status"), dict):
                   return item
               return None
+
+          def parse_utc(match):
+              utc = ((match.get("status") or {}).get("utcTime"))
+              if not utc:
+                  return None
+              try:
+                  return datetime.fromisoformat(str(utc).replace("Z", "+00:00"))
+              except ValueError:
+                  return None
 
           team_id = os.getenv("TEAM_ID", "1186081")
           url = "https://www.fotmob.com/api/teams?" + urlencode(
@@ -86,16 +96,24 @@ jobs:
           fixtures = data.get("fixtures", {}).get("allFixtures", {}).get("fixtures", [])
           parsed = [pick_match_obj(x) for x in fixtures]
           parsed = [m for m in parsed if isinstance(m, dict)]
-          with_utc = [m for m in parsed if (m.get("status") or {}).get("utcTime")]
+          with_utc = [m for m in parsed if parse_utc(m) is not None]
+
+          now = datetime.now(timezone.utc)
+          lower = now - timedelta(hours=4)
+          upper = now + timedelta(hours=24)
+          in_bot_window = [m for m in with_utc if lower <= parse_utc(m) <= upper]
 
           print(f"team_id={team_id}")
           print(f"top_level_keys={sorted(list(data.keys()))[:20]}")
           print(f"fixtures_count={len(fixtures)}")
           print(f"parsed_match_objects={len(parsed)}")
           print(f"parsed_matches_with_utcTime={len(with_utc)}")
+          print(f"parsed_matches_in_bot_window={len(in_bot_window)}")
 
-          if with_utc:
-              match = with_utc[0]
+          # Show nearest match to current time so debug output is relevant and not just oldest item.
+          target_pool = in_bot_window if in_bot_window else with_utc
+          if target_pool:
+              match = min(target_pool, key=lambda m: abs((parse_utc(m) - now).total_seconds()))
               status = match.get("status") or {}
               sample = {
                   "id": match.get("id"),

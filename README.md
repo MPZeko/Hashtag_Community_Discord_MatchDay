@@ -100,7 +100,10 @@ Then inspect logs from **Debug FotMob payload**:
 - `fixtures_count` should be greater than `0`
 - `parsed_match_objects` should be greater than `0`
 - `parsed_matches_with_utcTime` should be greater than `0`
+- `parsed_matches_in_bot_window` should ideally be greater than `0`
 - `sample_match` should include fields like `home`, `away`, `utcTime`
+
+Note: FotMob fixture arrays are not always ordered by "closest kickoff". The debug step now selects the match nearest to current time (preferably within the same time window the bot uses), so you do not get misleading old sample matches by default.
 
 If `fixtures_count > 0` but `parsed_matches_with_utcTime = 0`, FotMob changed shape and you should use the printed raw fixture sample to update parsing.
 
