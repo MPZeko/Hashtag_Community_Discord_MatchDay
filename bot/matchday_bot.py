@@ -30,6 +30,13 @@ def get_env(name: str, default: str | None = None) -> str:
     return value
 
 
+def env_as_bool(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def load_state(path: Path = STATE_FILE) -> set[str]:
     if not path.exists():
         return set()
@@ -172,9 +179,22 @@ def post_to_discord(webhook_url: str, message: str) -> None:
 
 
 def run() -> int:
-    webhook_url = get_env("DISCORD_WEBHOOK_URL")
+    dry_run = env_as_bool("DRY_RUN", default=False)
+    webhook_url = os.getenv("DISCORD_WEBHOOK_URL")
     team_id = int(get_env("TEAM_ID", "1186081"))
     prematch_window_minutes = int(get_env("PREMATCH_WINDOW_MINUTES", "120"))
+    test_message = os.getenv("DISCORD_TEST_MESSAGE", "").strip()
+
+    if not webhook_url and not dry_run:
+        raise RuntimeError("Missing required environment variable: DISCORD_WEBHOOK_URL")
+
+    if test_message:
+        if dry_run:
+            print(f"[DRY_RUN] Would post test message: {test_message}")
+        else:
+            post_to_discord(webhook_url, test_message)
+            print("Posted test message to Discord.")
+        return 0
 
     fixtures = fetch_team_fixtures(team_id)
     events = build_events(fixtures, team_id, prematch_window_minutes)
@@ -187,11 +207,16 @@ def run() -> int:
         return 0
 
     for event in new_events:
-        post_to_discord(webhook_url, event.message)
-        posted_event_ids.add(event.event_id)
-        print(f"Posted: {event.event_id}")
+        if dry_run:
+            print(f"[DRY_RUN] Would post: {event.event_id} -> {event.message}")
+        else:
+            post_to_discord(webhook_url, event.message)
+            posted_event_ids.add(event.event_id)
+            print(f"Posted: {event.event_id}")
 
-    save_state(posted_event_ids)
+    if not dry_run:
+        save_state(posted_event_ids)
+
     return 0
 
 
