@@ -4,14 +4,26 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 from bot import matchday_bot
-from bot.matchday_bot import _pick_match_obj, _request_json, build_events, env_as_bool, match_score
+from bot.matchday_bot import (
+    _pick_match_obj,
+    _request_json,
+    build_events,
+    build_next_match_message,
+    env_as_bool,
+    find_next_upcoming_match,
+    match_score,
+)
 
 
 def _fixture(match):
     return {"fixtures": {"allFixtures": {"fixtures": [{"match": match}]}}}
 
 
-def _base_match(status_overrides=None, minutes_from_now=60):
+def _fixtures(matches):
+    return {"fixtures": {"allFixtures": {"fixtures": [{"match": m} for m in matches]}}}
+
+
+def _base_match(status_overrides=None, minutes_from_now=60, match_id=999):
     status_overrides = status_overrides or {}
     match_time = datetime.now(timezone.utc) + timedelta(minutes=minutes_from_now)
     status = {
@@ -24,7 +36,7 @@ def _base_match(status_overrides=None, minutes_from_now=60):
     status.update(status_overrides)
 
     return {
-        "id": 999,
+        "id": match_id,
         "home": {"id": 1186081, "name": "Hashtag United", "score": 1},
         "away": {"id": 123, "name": "Opponent", "score": 0},
         "status": status,
@@ -82,7 +94,6 @@ class TestMatchDayBot(unittest.TestCase):
         self.assertTrue(any(event.event_id.endswith(":fulltime") for event in events))
 
     def test_match_lookahead_hours_filters_future_matches(self):
-        # Match 36 hours ahead is outside a 24-hour lookahead, but inside a 48-hour lookahead.
         fixtures = _fixture(_base_match(minutes_from_now=36 * 60))
         events_24 = build_events(fixtures, 1186081, prematch_window_minutes=3000, match_lookahead_hours=24)
         events_48 = build_events(fixtures, 1186081, prematch_window_minutes=3000, match_lookahead_hours=48)
@@ -97,6 +108,24 @@ class TestMatchDayBot(unittest.TestCase):
         self.assertIn("Kickoff (London)", prematch.message)
         self.assertIn("🏆 League Round 1", prematch.message)
         self.assertIn("🏟️ Stadium: Parkside", prematch.message)
+
+    def test_find_next_upcoming_match(self):
+        fixtures = _fixtures(
+            [
+                _base_match(minutes_from_now=500, match_id=1),
+                _base_match(minutes_from_now=60, match_id=2),
+                _base_match(minutes_from_now=180, match_id=3),
+            ]
+        )
+        match = find_next_upcoming_match(fixtures)
+        self.assertIsNotNone(match)
+        self.assertEqual(match.get("id"), 2)
+
+    def test_build_next_match_message_includes_round_and_stadium(self):
+        message = build_next_match_message(_base_match(minutes_from_now=60), 1186081)
+        self.assertIn("Next match", message)
+        self.assertIn("🏆 League Round 1", message)
+        self.assertIn("🏟️ Stadium: Parkside", message)
 
     def test_pick_match_obj_supports_multiple_shapes(self):
         self.assertEqual(_pick_match_obj({"match": {"id": 1}}), {"id": 1})

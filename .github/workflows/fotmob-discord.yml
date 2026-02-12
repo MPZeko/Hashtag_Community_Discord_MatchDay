@@ -27,6 +27,11 @@ on:
         required: false
         type: boolean
         default: false
+      send_next_match_now:
+        description: "Post the next upcoming match to Discord regardless of lookahead window"
+        required: false
+        type: boolean
+        default: false
       test_message:
         description: "Custom Discord test message"
         required: false
@@ -154,6 +159,7 @@ jobs:
           PREMATCH_WINDOW_MINUTES: ${{ github.event_name == 'workflow_dispatch' && inputs.prematch_window_minutes || vars.PREMATCH_WINDOW_MINUTES || '120' }}
           MATCH_LOOKAHEAD_HOURS: ${{ github.event_name == 'workflow_dispatch' && inputs.match_lookahead_hours || vars.MATCH_LOOKAHEAD_HOURS || '24' }}
           DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || 'false' }}
+          SEND_NEXT_MATCH_NOW: ${{ github.event_name == 'workflow_dispatch' && inputs.send_next_match_now || 'false' }}
           DISCORD_TEST_MESSAGE: ${{ github.event_name == 'workflow_dispatch' && inputs.send_test_message && inputs.test_message || '' }}
         run: python bot/matchday_bot.py
 

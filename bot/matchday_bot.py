@@ -192,6 +192,50 @@ def build_competition_line(match: dict[str, Any]) -> str:
     return f"🏆 {tournament} {round_text}".strip()
 
 
+def find_next_upcoming_match(fixtures: dict[str, Any]) -> dict[str, Any] | None:
+    """Return the nearest upcoming match from fixtures, regardless of lookahead window."""
+    now = datetime.now(timezone.utc)
+    candidates: list[tuple[datetime, dict[str, Any]]] = []
+
+    fixture_items = fixtures.get("fixtures", {}).get("allFixtures", {}).get("fixtures", [])
+    for item in fixture_items:
+        match = _pick_match_obj(item)
+        if not match:
+            continue
+
+        try:
+            match_time = parse_match_utc(match)
+        except KeyError:
+            continue
+
+        if match_time >= now:
+            candidates.append((match_time, match))
+
+    if not candidates:
+        return None
+
+    candidates.sort(key=lambda x: x[0])
+    return candidates[0][1]
+
+
+def build_next_match_message(match: dict[str, Any], team_id: int) -> str:
+    """Build a Discord message for the next upcoming match, independent of windows."""
+    hashtag_name, opponent_name = team_display_name(match, team_id)
+    kickoff_london = parse_match_utc(match).astimezone(LONDON_TZ).strftime("%d-%m-%Y %H:%M")
+    competition_line = build_competition_line(match)
+    stadium = match_stadium(match)
+
+    lines = [
+        f"📌 **Next match:** {hashtag_name} vs {opponent_name}",
+        f"🕒 Kickoff (London): {kickoff_london}",
+        competition_line,
+    ]
+    if stadium:
+        lines.append(f"🏟️ Stadium: {stadium}")
+
+    return "\n".join(lines)
+
+
 def build_events(
     fixtures: dict[str, Any],
     team_id: int,
@@ -307,6 +351,7 @@ def run() -> int:
     team_id = int(get_env("TEAM_ID", "1186081"))
     prematch_window_minutes = int(get_env("PREMATCH_WINDOW_MINUTES", "120"))
     match_lookahead_hours = int(get_env("MATCH_LOOKAHEAD_HOURS", "24"))
+    send_next_match_now = env_as_bool("SEND_NEXT_MATCH_NOW", default=False)
     test_message = os.getenv("DISCORD_TEST_MESSAGE", "").strip()
 
     if not webhook_url and not dry_run:
@@ -322,6 +367,22 @@ def run() -> int:
         return 0
 
     fixtures = fetch_team_fixtures(team_id)
+
+    # Manual override: post the next upcoming match regardless of lookahead window.
+    if send_next_match_now:
+        next_match = find_next_upcoming_match(fixtures)
+        if not next_match:
+            print("No upcoming matches found in FotMob payload.")
+            return 0
+
+        message = build_next_match_message(next_match, team_id)
+        if dry_run:
+            print(f"[DRY_RUN] Would post next match -> {message}")
+        else:
+            post_to_discord(webhook_url, message)
+            print("Posted next upcoming match to Discord.")
+        return 0
+
     events = build_events(fixtures, team_id, prematch_window_minutes, match_lookahead_hours)
 
     posted_event_ids = load_state()

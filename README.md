@@ -28,6 +28,7 @@ export DISCORD_WEBHOOK_URL="https://discord.com/api/webhooks/..."
 export TEAM_ID="1186081"  # optional
 export PREMATCH_WINDOW_MINUTES="120"  # optional
 export MATCH_LOOKAHEAD_HOURS="24"  # optional
+export SEND_NEXT_MATCH_NOW="false"  # optional
 ```
 
 3. Install dependencies:
@@ -85,6 +86,12 @@ When starting the workflow manually (**Run workflow**), you can use two test mod
 
 With `send_test_message = true`, the workflow posts one direct message to your webhook, so you can immediately verify that GitHub Actions can post in the channel.
 
+**C. Force post next upcoming match (regardless of days ahead):**
+- `dry_run = false`
+- `send_next_match_now = true`
+
+This mode ignores the normal lookahead filter and posts the nearest upcoming match from FotMob.
+
 Tip: Discord webhooks often return HTTP `204 No Content` on success. The bot handles this correctly.
 
 If you are unsure about data access, set `debug_fotmob_payload = true` in a manual workflow run. This logs sample data (for example match id, team names, status, and score) directly from FotMob before the bot runs.
@@ -137,6 +144,7 @@ Optional repository variables:
 - `TEAM_ID`
 - `PREMATCH_WINDOW_MINUTES`
 - `MATCH_LOOKAHEAD_HOURS`
+- `SEND_NEXT_MATCH_NOW`
 
 Manual `workflow_dispatch` inputs:
 
@@ -145,6 +153,7 @@ Manual `workflow_dispatch` inputs:
 - `match_lookahead_hours`
 - `dry_run`
 - `send_test_message`
+- `send_next_match_now`
 - `test_message`
 - `debug_fotmob_payload`
 
