@@ -1,0 +1,165 @@
+name: FotMob Discord Match Updates
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+    inputs:
+      team_id:
+        description: "FotMob team id"
+        required: false
+        default: "1186081"
+      prematch_window_minutes:
+        description: "Minutes before kickoff to send pre-match updates"
+        required: false
+        default: "120"
+      match_lookahead_hours:
+        description: "How many hours ahead to consider fixtures for posting/debug"
+        required: false
+        default: "24"
+      dry_run:
+        description: "Run without posting to Discord (prints what would be posted)"
+        required: false
+        type: boolean
+        default: true
+      send_test_message:
+        description: "Send one direct test message to Discord (ignores match filtering)"
+        required: false
+        type: boolean
+        default: false
+      test_message:
+        description: "Custom Discord test message"
+        required: false
+        default: "🧪 GitHub Actions test: webhook works for Hashtag United bot"
+      debug_fotmob_payload:
+        description: "Print sample FotMob payload fields in logs"
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  post-updates:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Debug FotMob payload
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.debug_fotmob_payload }}
+        env:
+          TEAM_ID: ${{ github.event_name == 'workflow_dispatch' && inputs.team_id || vars.TEAM_ID || '1186081' }}
+          MATCH_LOOKAHEAD_HOURS: ${{ github.event_name == 'workflow_dispatch' && inputs.match_lookahead_hours || vars.MATCH_LOOKAHEAD_HOURS || '24' }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from datetime import datetime, timezone, timedelta
+          from urllib.parse import urlencode
+          from urllib.request import Request, urlopen
+
+          def pick_match_obj(item):
+              if isinstance(item.get("match"), dict):
+                  return item["match"]
+              if isinstance(item.get("fixture"), dict):
+                  return item["fixture"]
+              if isinstance(item.get("status"), dict):
+                  return item
+              return None
+
+          def parse_utc(match):
+              utc = ((match.get("status") or {}).get("utcTime"))
+              if not utc:
+                  return None
+              try:
+                  return datetime.fromisoformat(str(utc).replace("Z", "+00:00"))
+              except ValueError:
+                  return None
+
+          team_id = os.getenv("TEAM_ID", "1186081")
+          url = "https://www.fotmob.com/api/teams?" + urlencode(
+              {
+                  "id": team_id,
+                  "timezone": "Europe/London",
+                  "ccode3": "GBR",
+              }
+          )
+          req = Request(url, headers={"User-Agent": "Mozilla/5.0"})
+
+          with urlopen(req, timeout=30) as r:
+              data = json.loads(r.read().decode("utf-8"))
+
+          fixtures = data.get("fixtures", {}).get("allFixtures", {}).get("fixtures", [])
+          parsed = [pick_match_obj(x) for x in fixtures]
+          parsed = [m for m in parsed if isinstance(m, dict)]
+          with_utc = [m for m in parsed if parse_utc(m) is not None]
+
+          now = datetime.now(timezone.utc)
+          lookahead_hours = int(os.getenv("MATCH_LOOKAHEAD_HOURS", "24"))
+          lower = now - timedelta(hours=4)
+          upper = now + timedelta(hours=lookahead_hours)
+          in_bot_window = [m for m in with_utc if lower <= parse_utc(m) <= upper]
+
+          print(f"team_id={team_id}")
+          print(f"top_level_keys={sorted(list(data.keys()))[:20]}")
+          print(f"fixtures_count={len(fixtures)}")
+          print(f"parsed_match_objects={len(parsed)}")
+          print(f"parsed_matches_with_utcTime={len(with_utc)}")
+          print(f"match_lookahead_hours={lookahead_hours}")
+          print(f"parsed_matches_in_bot_window={len(in_bot_window)}")
+
+          # Show nearest match to current time so debug output is relevant and not just oldest item.
+          target_pool = in_bot_window if in_bot_window else with_utc
+          if target_pool:
+              match = min(target_pool, key=lambda m: abs((parse_utc(m) - now).total_seconds()))
+              status = match.get("status") or {}
+              sample = {
+                  "id": match.get("id"),
+                  "home": (match.get("home") or {}).get("name"),
+                  "away": (match.get("away") or {}).get("name"),
+                  "utcTime": status.get("utcTime"),
+                  "started": status.get("started"),
+                  "finished": status.get("finished"),
+                  "cancelled": status.get("cancelled"),
+                  "reason_short": (status.get("reason") or {}).get("short"),
+                  "scoreStr": status.get("scoreStr"),
+                  "tournament": (match.get("tournament") or {}).get("name"),
+                  "roundName": match.get("roundName"),
+              }
+              print("sample_match=", json.dumps(sample, ensure_ascii=False))
+          elif fixtures:
+              print("No parseable match object with utcTime found. First raw fixture item:")
+              print(json.dumps(fixtures[0], ensure_ascii=False)[:1500])
+          PY
+
+      - name: Restore state cache
+        uses: actions/cache@v4
+        with:
+          path: .state/posted_events.json
+          key: fotmob-state-${{ github.repository }}
+
+      - name: Run matchday bot
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          TEAM_ID: ${{ github.event_name == 'workflow_dispatch' && inputs.team_id || vars.TEAM_ID || '1186081' }}
+          PREMATCH_WINDOW_MINUTES: ${{ github.event_name == 'workflow_dispatch' && inputs.prematch_window_minutes || vars.PREMATCH_WINDOW_MINUTES || '120' }}
+          MATCH_LOOKAHEAD_HOURS: ${{ github.event_name == 'workflow_dispatch' && inputs.match_lookahead_hours || vars.MATCH_LOOKAHEAD_HOURS || '24' }}
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || 'false' }}
+          DISCORD_TEST_MESSAGE: ${{ github.event_name == 'workflow_dispatch' && inputs.send_test_message && inputs.test_message || '' }}
+        run: python bot/matchday_bot.py
+
+      - name: Save state cache
+        uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: .state/posted_events.json
+          key: fotmob-state-${{ github.repository }}
