@@ -80,6 +80,14 @@ class TestMatchDayBot(unittest.TestCase):
         events = build_events(fixtures, 1186081, prematch_window_minutes=120)
         self.assertTrue(any(event.event_id.endswith(":fulltime") for event in events))
 
+    def test_match_lookahead_hours_filters_future_matches(self):
+        # Match 36 hours ahead is outside a 24-hour lookahead, but inside a 48-hour lookahead.
+        fixtures = _fixture(_base_match(minutes_from_now=36 * 60))
+        events_24 = build_events(fixtures, 1186081, prematch_window_minutes=3000, match_lookahead_hours=24)
+        events_48 = build_events(fixtures, 1186081, prematch_window_minutes=3000, match_lookahead_hours=48)
+        self.assertEqual(len(events_24), 0)
+        self.assertTrue(any(event.event_id.endswith(":prematch") for event in events_48))
+
     def test_messages_are_in_english_and_use_london_time_label(self):
         fixtures = _fixture(_base_match(minutes_from_now=30))
         events = build_events(fixtures, 1186081, prematch_window_minutes=120)

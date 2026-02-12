@@ -155,12 +155,17 @@ def match_score(match: dict[str, Any]) -> str:
     return f"{home_score}-{away_score}"
 
 
-def build_events(fixtures: dict[str, Any], team_id: int, prematch_window_minutes: int) -> list[MatchEvent]:
+def build_events(
+    fixtures: dict[str, Any],
+    team_id: int,
+    prematch_window_minutes: int,
+    match_lookahead_hours: int = 24,
+) -> list[MatchEvent]:
     """Convert FotMob payload into Discord-ready match events."""
     now = datetime.now(timezone.utc)
     # Only inspect recent/live/near-future matches to avoid noisy history/far-future fixtures.
     lower = now - timedelta(hours=4)
-    upper = now + timedelta(hours=24)
+    upper = now + timedelta(hours=match_lookahead_hours)
     prematch_threshold = now + timedelta(minutes=prematch_window_minutes)
 
     events: list[MatchEvent] = []
@@ -265,6 +270,7 @@ def run() -> int:
     webhook_url = os.getenv("DISCORD_WEBHOOK_URL")
     team_id = int(get_env("TEAM_ID", "1186081"))
     prematch_window_minutes = int(get_env("PREMATCH_WINDOW_MINUTES", "120"))
+    match_lookahead_hours = int(get_env("MATCH_LOOKAHEAD_HOURS", "24"))
     test_message = os.getenv("DISCORD_TEST_MESSAGE", "").strip()
 
     if not webhook_url and not dry_run:
@@ -280,7 +286,7 @@ def run() -> int:
         return 0
 
     fixtures = fetch_team_fixtures(team_id)
-    events = build_events(fixtures, team_id, prematch_window_minutes)
+    events = build_events(fixtures, team_id, prematch_window_minutes, match_lookahead_hours)
 
     posted_event_ids = load_state()
     # Filter out events already posted in earlier runs.

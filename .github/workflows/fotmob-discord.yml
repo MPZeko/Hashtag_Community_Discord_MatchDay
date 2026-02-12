@@ -13,6 +13,10 @@ on:
         description: "Minutes before kickoff to send pre-match updates"
         required: false
         default: "120"
+      match_lookahead_hours:
+        description: "How many hours ahead to consider fixtures for posting/debug"
+        required: false
+        default: "24"
       dry_run:
         description: "Run without posting to Discord (prints what would be posted)"
         required: false
@@ -54,6 +58,7 @@ jobs:
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.debug_fotmob_payload }}
         env:
           TEAM_ID: ${{ github.event_name == 'workflow_dispatch' && inputs.team_id || vars.TEAM_ID || '1186081' }}
+          MATCH_LOOKAHEAD_HOURS: ${{ github.event_name == 'workflow_dispatch' && inputs.match_lookahead_hours || vars.MATCH_LOOKAHEAD_HOURS || '24' }}
         run: |
           python - <<'PY'
           import json
@@ -99,8 +104,9 @@ jobs:
           with_utc = [m for m in parsed if parse_utc(m) is not None]
 
           now = datetime.now(timezone.utc)
+          lookahead_hours = int(os.getenv("MATCH_LOOKAHEAD_HOURS", "24"))
           lower = now - timedelta(hours=4)
-          upper = now + timedelta(hours=24)
+          upper = now + timedelta(hours=lookahead_hours)
           in_bot_window = [m for m in with_utc if lower <= parse_utc(m) <= upper]
 
           print(f"team_id={team_id}")
@@ -108,6 +114,7 @@ jobs:
           print(f"fixtures_count={len(fixtures)}")
           print(f"parsed_match_objects={len(parsed)}")
           print(f"parsed_matches_with_utcTime={len(with_utc)}")
+          print(f"match_lookahead_hours={lookahead_hours}")
           print(f"parsed_matches_in_bot_window={len(in_bot_window)}")
 
           # Show nearest match to current time so debug output is relevant and not just oldest item.
@@ -145,6 +152,7 @@ jobs:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           TEAM_ID: ${{ github.event_name == 'workflow_dispatch' && inputs.team_id || vars.TEAM_ID || '1186081' }}
           PREMATCH_WINDOW_MINUTES: ${{ github.event_name == 'workflow_dispatch' && inputs.prematch_window_minutes || vars.PREMATCH_WINDOW_MINUTES || '120' }}
+          MATCH_LOOKAHEAD_HOURS: ${{ github.event_name == 'workflow_dispatch' && inputs.match_lookahead_hours || vars.MATCH_LOOKAHEAD_HOURS || '24' }}
           DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || 'false' }}
           DISCORD_TEST_MESSAGE: ${{ github.event_name == 'workflow_dispatch' && inputs.send_test_message && inputs.test_message || '' }}
         run: python bot/matchday_bot.py

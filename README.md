@@ -25,6 +25,7 @@ Automated bot that fetches match data from FotMob for **Hashtag United** and pos
 export DISCORD_WEBHOOK_URL="https://discord.com/api/webhooks/..."
 export TEAM_ID="1186081"  # optional
 export PREMATCH_WINDOW_MINUTES="120"  # optional
+export MATCH_LOOKAHEAD_HOURS="24"  # optional
 ```
 
 3. Install dependencies:
@@ -101,6 +102,7 @@ Then inspect logs from **Debug FotMob payload**:
 - `parsed_match_objects` should be greater than `0`
 - `parsed_matches_with_utcTime` should be greater than `0`
 - `parsed_matches_in_bot_window` should ideally be greater than `0`
+- `match_lookahead_hours` controls this window (default: `24`)
 - `sample_match` should include fields like `home`, `away`, `utcTime`
 
 Note: FotMob fixture arrays are not always ordered by "closest kickoff". The debug step now selects the match nearest to current time (preferably within the same time window the bot uses), so you do not get misleading old sample matches by default.
@@ -132,11 +134,13 @@ Optional repository variables:
 
 - `TEAM_ID`
 - `PREMATCH_WINDOW_MINUTES`
+- `MATCH_LOOKAHEAD_HOURS`
 
 Manual `workflow_dispatch` inputs:
 
 - `team_id`
 - `prematch_window_minutes`
+- `match_lookahead_hours`
 - `dry_run`
 - `send_test_message`
 - `test_message`
@@ -147,3 +151,4 @@ Manual `workflow_dispatch` inputs:
 FotMob does not provide an official public API for this setup. The bot uses an open JSON endpoint that may change over time.
 
 For better fixture compatibility, the bot calls the team endpoint with `timezone=Europe/London` and `ccode3=GBR`, and parses multiple possible fixture shapes.
+The bot filters matches to a dynamic window from 4 hours in the past to `MATCH_LOOKAHEAD_HOURS` in the future (default `24`).
