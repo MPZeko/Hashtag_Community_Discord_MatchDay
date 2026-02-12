@@ -15,6 +15,8 @@ Automated bot that fetches match data from FotMob for **Hashtag United** and pos
 - Can run locally or on a schedule via GitHub Actions
 - Discord messages are in English
 - Kickoff time is shown in London time (`Europe/London`)
+- Competition + round info is included in Discord posts
+- Stadium/venue name is included when available
 
 ## Setup
 

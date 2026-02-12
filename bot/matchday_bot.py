@@ -155,6 +155,43 @@ def match_score(match: dict[str, Any]) -> str:
     return f"{home_score}-{away_score}"
 
 
+def match_round(match: dict[str, Any]) -> str:
+    """Extract best-effort round/stage label from a FotMob match payload."""
+    candidates = [
+        match.get("roundName"),
+        match.get("round"),
+        (match.get("tournament") or {}).get("roundName"),
+        (match.get("tournament") or {}).get("round"),
+        (match.get("series") or {}).get("name"),
+    ]
+    for value in candidates:
+        if value:
+            return str(value)
+    return ""
+
+
+def match_stadium(match: dict[str, Any]) -> str:
+    """Extract best-effort stadium/venue name from a FotMob match payload."""
+    candidates = [
+        (match.get("venue") or {}).get("name"),
+        (match.get("stadium") or {}).get("name"),
+        (match.get("ground") or {}).get("name"),
+        (match.get("status") or {}).get("venueName"),
+        match.get("venueName"),
+    ]
+    for value in candidates:
+        if value:
+            return str(value)
+    return ""
+
+
+def build_competition_line(match: dict[str, Any]) -> str:
+    """Build 'competition + round' text used in Discord messages."""
+    tournament = (match.get("tournament") or {}).get("name") or "Unknown competition"
+    round_text = match_round(match)
+    return f"🏆 {tournament} {round_text}".strip()
+
+
 def build_events(
     fixtures: dict[str, Any],
     team_id: int,
@@ -190,8 +227,6 @@ def build_events(
             continue
 
         hashtag_name, opponent_name = team_display_name(match, team_id)
-        tournament = match.get("tournament", {}).get("name", "Unknown competition")
-        round_name = match.get("roundName") or ""
         started = bool(status.get("started"))
         finished = bool(status.get("finished"))
         cancelled = bool(status.get("cancelled"))
@@ -200,61 +235,62 @@ def build_events(
         # Fallback to other IDs if nested match ID is missing.
         match_id = str(match.get("id") or item.get("id") or item.get("matchId") or "unknown")
         score = match_score(match)
+        competition_line = build_competition_line(match)
+        stadium = match_stadium(match)
+        stadium_line = f"🏟️ Stadium: {stadium}" if stadium else ""
 
         if cancelled:
-            events.append(
-                MatchEvent(
-                    f"{match_id}:cancelled",
-                    (
-                        f"❌ **{hashtag_name} vs {opponent_name}** is cancelled.\n"
-                        f"🏆 {tournament} {round_name}"
-                    ).strip(),
-                )
-            )
+            lines = [
+                f"❌ **{hashtag_name} vs {opponent_name}** is cancelled.",
+                competition_line,
+            ]
+            if stadium_line:
+                lines.append(stadium_line)
+            events.append(MatchEvent(f"{match_id}:cancelled", "\n".join(lines)))
             continue
 
         if not started and match_time <= prematch_threshold:
             kickoff_london = match_time.astimezone(LONDON_TZ).strftime("%d-%m-%Y %H:%M")
-            events.append(
-                MatchEvent(
-                    f"{match_id}:prematch",
-                    (
-                        f"📣 **Match soon:** {hashtag_name} vs {opponent_name}\n"
-                        f"🕒 Kickoff (London): {kickoff_london}\n"
-                        f"🏆 {tournament} {round_name}"
-                    ).strip(),
-                )
-            )
+            lines = [
+                f"📣 **Match soon:** {hashtag_name} vs {opponent_name}",
+                f"🕒 Kickoff (London): {kickoff_london}",
+                competition_line,
+            ]
+            if stadium_line:
+                lines.append(stadium_line)
+            events.append(MatchEvent(f"{match_id}:prematch", "\n".join(lines)))
             continue
 
         if started and not finished:
             if str(reason_code).upper() == "HT":
-                events.append(
-                    MatchEvent(
-                        f"{match_id}:halftime",
-                        f"⏸️ **Half-time:** {hashtag_name} vs {opponent_name}\n📊 Score: {score}",
-                    )
-                )
+                lines = [
+                    f"⏸️ **Half-time:** {hashtag_name} vs {opponent_name}",
+                    f"📊 Score: {score}",
+                    competition_line,
+                ]
+                if stadium_line:
+                    lines.append(stadium_line)
+                events.append(MatchEvent(f"{match_id}:halftime", "\n".join(lines)))
             else:
-                events.append(
-                    MatchEvent(
-                        f"{match_id}:live",
-                        f"🔴 **Match is live:** {hashtag_name} vs {opponent_name}\n📊 Live score: {score}",
-                    )
-                )
+                lines = [
+                    f"🔴 **Match is live:** {hashtag_name} vs {opponent_name}",
+                    f"📊 Live score: {score}",
+                    competition_line,
+                ]
+                if stadium_line:
+                    lines.append(stadium_line)
+                events.append(MatchEvent(f"{match_id}:live", "\n".join(lines)))
             continue
 
         if finished:
-            events.append(
-                MatchEvent(
-                    f"{match_id}:fulltime",
-                    (
-                        f"✅ **Full-time:** {hashtag_name} vs {opponent_name}\n"
-                        f"📊 Final score: {score}\n"
-                        f"🏆 {tournament} {round_name}"
-                    ).strip(),
-                )
-            )
+            lines = [
+                f"✅ **Full-time:** {hashtag_name} vs {opponent_name}",
+                f"📊 Final score: {score}",
+                competition_line,
+            ]
+            if stadium_line:
+                lines.append(stadium_line)
+            events.append(MatchEvent(f"{match_id}:fulltime", "\n".join(lines)))
 
     return events
 

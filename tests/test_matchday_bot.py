@@ -30,6 +30,7 @@ def _base_match(status_overrides=None, minutes_from_now=60):
         "status": status,
         "tournament": {"name": "League"},
         "roundName": "Round 1",
+        "venue": {"name": "Parkside"},
     }
 
 
@@ -94,6 +95,8 @@ class TestMatchDayBot(unittest.TestCase):
         prematch = next(event for event in events if event.event_id.endswith(":prematch"))
         self.assertIn("Match soon", prematch.message)
         self.assertIn("Kickoff (London)", prematch.message)
+        self.assertIn("🏆 League Round 1", prematch.message)
+        self.assertIn("🏟️ Stadium: Parkside", prematch.message)
 
     def test_pick_match_obj_supports_multiple_shapes(self):
         self.assertEqual(_pick_match_obj({"match": {"id": 1}}), {"id": 1})
