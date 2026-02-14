@@ -2,7 +2,7 @@ name: FotMob Discord Match Updates
 
 on:
   schedule:
-    - cron: "*/10 * * * *"
+    - cron: "*/5 * * * *"
   workflow_dispatch:
     inputs:
       team_id:
@@ -17,6 +17,22 @@ on:
         description: "How many hours ahead to consider fixtures for posting/debug"
         required: false
         default: "24"
+      fast_window_before_minutes:
+        description: "Fast polling starts this many minutes before kickoff"
+        required: false
+        default: "60"
+      fast_window_after_minutes:
+        description: "Fast polling continues this many minutes after expected full-time"
+        required: false
+        default: "30"
+      expected_match_duration_minutes:
+        description: "Expected match duration used for polling window calculations"
+        required: false
+        default: "120"
+      slow_poll_interval_minutes:
+        description: "Outside fast window, process only every N minutes"
+        required: false
+        default: "30"
       dry_run:
         description: "Run without posting to Discord (prints what would be posted)"
         required: false
@@ -158,6 +174,10 @@ jobs:
           TEAM_ID: ${{ github.event_name == 'workflow_dispatch' && inputs.team_id || vars.TEAM_ID || '1186081' }}
           PREMATCH_WINDOW_MINUTES: ${{ github.event_name == 'workflow_dispatch' && inputs.prematch_window_minutes || vars.PREMATCH_WINDOW_MINUTES || '120' }}
           MATCH_LOOKAHEAD_HOURS: ${{ github.event_name == 'workflow_dispatch' && inputs.match_lookahead_hours || vars.MATCH_LOOKAHEAD_HOURS || '24' }}
+          FAST_WINDOW_BEFORE_MINUTES: ${{ github.event_name == 'workflow_dispatch' && inputs.fast_window_before_minutes || vars.FAST_WINDOW_BEFORE_MINUTES || '60' }}
+          FAST_WINDOW_AFTER_MINUTES: ${{ github.event_name == 'workflow_dispatch' && inputs.fast_window_after_minutes || vars.FAST_WINDOW_AFTER_MINUTES || '30' }}
+          EXPECTED_MATCH_DURATION_MINUTES: ${{ github.event_name == 'workflow_dispatch' && inputs.expected_match_duration_minutes || vars.EXPECTED_MATCH_DURATION_MINUTES || '120' }}
+          SLOW_POLL_INTERVAL_MINUTES: ${{ github.event_name == 'workflow_dispatch' && inputs.slow_poll_interval_minutes || vars.SLOW_POLL_INTERVAL_MINUTES || '30' }}
           DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || 'false' }}
           SEND_NEXT_MATCH_NOW: ${{ github.event_name == 'workflow_dispatch' && inputs.send_next_match_now || 'false' }}
           DISCORD_TEST_MESSAGE: ${{ github.event_name == 'workflow_dispatch' && inputs.send_test_message && inputs.test_message || '' }}

@@ -236,6 +236,45 @@ def build_next_match_message(match: dict[str, Any], team_id: int) -> str:
     return "\n".join(lines)
 
 
+
+
+def should_run_event_pipeline(
+    fixtures: dict[str, Any],
+    now: datetime | None = None,
+    fast_window_before_minutes: int = 60,
+    fast_window_after_minutes: int = 30,
+    expected_match_duration_minutes: int = 120,
+    slow_poll_interval_minutes: int = 30,
+) -> bool:
+    """Return True when the bot should execute event posting on this tick.
+
+    - Fast mode: every run from 60 minutes before kickoff until 30 minutes after expected full-time.
+    - Slow mode: outside fast window, only run on slow_poll_interval boundaries (e.g. every 30 min).
+    """
+    now = now or datetime.now(timezone.utc)
+
+    fixture_items = fixtures.get("fixtures", {}).get("allFixtures", {}).get("fixtures", [])
+    for item in fixture_items:
+        match = _pick_match_obj(item)
+        if not match:
+            continue
+
+        try:
+            kickoff = parse_match_utc(match)
+        except KeyError:
+            continue
+
+        status = match.get("status") or {}
+        if bool(status.get("started")) and not bool(status.get("finished")):
+            return True
+
+        window_start = kickoff - timedelta(minutes=fast_window_before_minutes)
+        window_end = kickoff + timedelta(minutes=expected_match_duration_minutes + fast_window_after_minutes)
+        if window_start <= now <= window_end:
+            return True
+
+    return (now.minute % slow_poll_interval_minutes) == 0
+
 def build_events(
     fixtures: dict[str, Any],
     team_id: int,
@@ -352,6 +391,10 @@ def run() -> int:
     prematch_window_minutes = int(get_env("PREMATCH_WINDOW_MINUTES", "120"))
     match_lookahead_hours = int(get_env("MATCH_LOOKAHEAD_HOURS", "24"))
     send_next_match_now = env_as_bool("SEND_NEXT_MATCH_NOW", default=False)
+    fast_window_before_minutes = int(get_env("FAST_WINDOW_BEFORE_MINUTES", "60"))
+    fast_window_after_minutes = int(get_env("FAST_WINDOW_AFTER_MINUTES", "30"))
+    expected_match_duration_minutes = int(get_env("EXPECTED_MATCH_DURATION_MINUTES", "120"))
+    slow_poll_interval_minutes = int(get_env("SLOW_POLL_INTERVAL_MINUTES", "30"))
     test_message = os.getenv("DISCORD_TEST_MESSAGE", "").strip()
 
     if not webhook_url and not dry_run:
@@ -381,6 +424,16 @@ def run() -> int:
         else:
             post_to_discord(webhook_url, message)
             print("Posted next upcoming match to Discord.")
+        return 0
+
+    if not should_run_event_pipeline(
+        fixtures,
+        fast_window_before_minutes=fast_window_before_minutes,
+        fast_window_after_minutes=fast_window_after_minutes,
+        expected_match_duration_minutes=expected_match_duration_minutes,
+        slow_poll_interval_minutes=slow_poll_interval_minutes,
+    ):
+        print("Skipping this 5-minute tick (outside fast window and not on slow interval boundary).")
         return 0
 
     events = build_events(fixtures, team_id, prematch_window_minutes, match_lookahead_hours)

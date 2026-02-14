@@ -12,6 +12,7 @@ from bot.matchday_bot import (
     env_as_bool,
     find_next_upcoming_match,
     match_score,
+    should_run_event_pipeline,
 )
 
 
@@ -126,6 +127,43 @@ class TestMatchDayBot(unittest.TestCase):
         self.assertIn("Next match", message)
         self.assertIn("🏆 League Round 1", message)
         self.assertIn("🏟️ Stadium: Parkside", message)
+
+
+    def test_should_run_event_pipeline_fast_window_true(self):
+        match = _base_match(minutes_from_now=40)
+        fixtures = _fixture(match)
+        now = datetime.now(timezone.utc)
+        self.assertTrue(
+            should_run_event_pipeline(
+                fixtures,
+                now=now,
+                fast_window_before_minutes=60,
+                fast_window_after_minutes=30,
+                expected_match_duration_minutes=120,
+                slow_poll_interval_minutes=30,
+            )
+        )
+
+    def test_should_run_event_pipeline_slow_window_respects_interval(self):
+        # Build a fixture far away from now so fast window is inactive.
+        fixtures = _fixture(_base_match(minutes_from_now=5 * 24 * 60))
+        now_non_boundary = datetime(2026, 2, 14, 10, 7, tzinfo=timezone.utc)
+        now_boundary = datetime(2026, 2, 14, 10, 30, tzinfo=timezone.utc)
+
+        self.assertFalse(
+            should_run_event_pipeline(
+                fixtures,
+                now=now_non_boundary,
+                slow_poll_interval_minutes=30,
+            )
+        )
+        self.assertTrue(
+            should_run_event_pipeline(
+                fixtures,
+                now=now_boundary,
+                slow_poll_interval_minutes=30,
+            )
+        )
 
     def test_pick_match_obj_supports_multiple_shapes(self):
         self.assertEqual(_pick_match_obj({"match": {"id": 1}}), {"id": 1})

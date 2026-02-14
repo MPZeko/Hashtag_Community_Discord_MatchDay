@@ -29,6 +29,10 @@ export TEAM_ID="1186081"  # optional
 export PREMATCH_WINDOW_MINUTES="120"  # optional
 export MATCH_LOOKAHEAD_HOURS="24"  # optional
 export SEND_NEXT_MATCH_NOW="false"  # optional
+export FAST_WINDOW_BEFORE_MINUTES="60"  # optional
+export FAST_WINDOW_AFTER_MINUTES="30"  # optional
+export EXPECTED_MATCH_DURATION_MINUTES="120"  # optional
+export SLOW_POLL_INTERVAL_MINUTES="30"  # optional
 ```
 
 3. Install dependencies:
@@ -96,6 +100,10 @@ Tip: Discord webhooks often return HTTP `204 No Content` on success. The bot han
 
 If you are unsure about data access, set `debug_fotmob_payload = true` in a manual workflow run. This logs sample data (for example match id, team names, status, and score) directly from FotMob before the bot runs.
 
+Cadence behavior:
+- during match activity window (1 hour before kickoff to 30 minutes after expected full-time), runs are processed every 5 minutes
+- outside match activity window, runs are processed every 30 minutes
+
 
 ### 4) Verify FotMob data is actually being parsed
 
@@ -133,7 +141,10 @@ Recommended two-step check:
 
 ## GitHub Actions (automated operation)
 
-The workflow in `.github/workflows/fotmob-discord.yml` runs every 10 minutes.
+The workflow in `.github/workflows/fotmob-discord.yml` triggers every 5 minutes.
+The bot itself applies smart cadence rules:
+- every 5 minutes from 60 minutes before kickoff until 30 minutes after expected full-time
+- every 30 minutes outside that window
 
 Add repository secret:
 
@@ -145,12 +156,20 @@ Optional repository variables:
 - `PREMATCH_WINDOW_MINUTES`
 - `MATCH_LOOKAHEAD_HOURS`
 - `SEND_NEXT_MATCH_NOW`
+- `FAST_WINDOW_BEFORE_MINUTES`
+- `FAST_WINDOW_AFTER_MINUTES`
+- `EXPECTED_MATCH_DURATION_MINUTES`
+- `SLOW_POLL_INTERVAL_MINUTES`
 
 Manual `workflow_dispatch` inputs:
 
 - `team_id`
 - `prematch_window_minutes`
 - `match_lookahead_hours`
+- `fast_window_before_minutes`
+- `fast_window_after_minutes`
+- `expected_match_duration_minutes`
+- `slow_poll_interval_minutes`
 - `dry_run`
 - `send_test_message`
 - `send_next_match_now`
