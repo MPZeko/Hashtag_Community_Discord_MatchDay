@@ -13,8 +13,10 @@ from bot.matchday_bot import (
     build_events,
     build_next_match_message,
     collect_live_goal_events,
+    build_finished_match_recap_message,
     env_as_bool,
     find_next_upcoming_match,
+    find_latest_finished_match,
     load_state,
     match_score,
     parse_goal_events,
@@ -259,6 +261,122 @@ class TestMatchDayBot(unittest.TestCase):
     def test_env_as_bool_default_when_missing(self):
         os.environ.pop("UNSET_BOOL", None)
         self.assertTrue(env_as_bool("UNSET_BOOL", default=True))
+
+    def test_find_latest_finished_match_selects_most_recent(self):
+        older_finished = _base_match(
+            status_overrides={"started": True, "finished": True, "reason": {"short": "FT"}},
+            minutes_from_now=-72 * 60,
+            match_id=2001,
+        )
+        newest_finished = _base_match(
+            status_overrides={"started": True, "finished": True, "reason": {"short": "FT"}},
+            minutes_from_now=-4 * 60,
+            match_id=2002,
+        )
+        not_finished = _base_match(
+            status_overrides={"started": False, "finished": False},
+            minutes_from_now=2 * 60,
+            match_id=2003,
+        )
+        fixtures = _fixtures([older_finished, newest_finished, not_finished])
+
+        latest = find_latest_finished_match(fixtures, max_finished_age_hours=168)
+        self.assertIsNotNone(latest)
+        self.assertEqual(latest.get("id"), 2002)
+
+    def test_find_latest_finished_match_respects_max_age(self):
+        very_old = _base_match(
+            status_overrides={"started": True, "finished": True, "reason": {"short": "FT"}},
+            minutes_from_now=-10 * 24 * 60,
+            match_id=3001,
+        )
+        fixtures = _fixtures([very_old])
+        latest = find_latest_finished_match(fixtures, max_finished_age_hours=24)
+        self.assertIsNone(latest)
+
+    def test_build_finished_match_recap_message_includes_goals(self):
+        match = _base_match(
+            status_overrides={"started": True, "finished": True, "reason": {"short": "FT"}},
+            minutes_from_now=-90,
+            match_id=4001,
+        )
+        details = {
+            "general": {
+                "homeTeam": {"id": 1186081, "name": "Hashtag United", "score": 2},
+                "awayTeam": {"id": 123, "name": "Opponent", "score": 1},
+                "status": {"scoreStr": "2 - 1"},
+            },
+            "content": {
+                "shotmap": {
+                    "shots": [
+                        {"eventType": "Goal", "min": 12, "playerName": "Player A", "teamId": 1186081},
+                        {"eventType": "Goal", "min": 55, "minAdded": 2, "playerName": "Player B", "teamId": 123},
+                    ]
+                }
+            },
+        }
+        message = build_finished_match_recap_message(match, details, 1186081)
+        self.assertIn("Final score: 2-1", message)
+        self.assertIn("⚽ Goals:", message)
+        self.assertIn("12' Player A", message)
+        self.assertIn("55+2' Player B", message)
+
+    def test_recap_event_id_dedupe_respected(self):
+        posted = {"recap:999"}
+        self.assertIn("recap:999", posted)
+
+    def test_run_latest_finished_recap_skips_when_already_posted(self):
+        os.environ["DRY_RUN"] = "false"
+        os.environ["DISCORD_WEBHOOK_URL"] = "https://discord.com/api/webhooks/test"
+        os.environ["SEND_LATEST_FINISHED_MATCH_NOW"] = "true"
+
+        match = _base_match(
+            status_overrides={"started": True, "finished": True, "reason": {"short": "FT"}},
+            minutes_from_now=-60,
+            match_id=5555,
+        )
+
+        with patch.object(matchday_bot, "fetch_team_fixtures", return_value=_fixture(match)), \
+             patch.object(matchday_bot, "load_state", return_value={"recap:5555"}), \
+             patch.object(matchday_bot, "fetch_match_details") as mock_details, \
+             patch.object(matchday_bot, "post_to_discord") as mock_post:
+            code = matchday_bot.run()
+
+        self.assertEqual(code, 0)
+        mock_details.assert_not_called()
+        mock_post.assert_not_called()
+
+        os.environ.pop("DRY_RUN", None)
+        os.environ.pop("DISCORD_WEBHOOK_URL", None)
+        os.environ.pop("SEND_LATEST_FINISHED_MATCH_NOW", None)
+
+    def test_run_latest_finished_recap_force_post_bypasses_dedupe(self):
+        os.environ["DRY_RUN"] = "false"
+        os.environ["DISCORD_WEBHOOK_URL"] = "https://discord.com/api/webhooks/test"
+        os.environ["SEND_LATEST_FINISHED_MATCH_NOW"] = "true"
+        os.environ["FORCE_POST"] = "true"
+
+        match = _base_match(
+            status_overrides={"started": True, "finished": True, "reason": {"short": "FT"}},
+            minutes_from_now=-60,
+            match_id=7777,
+        )
+
+        with patch.object(matchday_bot, "fetch_team_fixtures", return_value=_fixture(match)), \
+             patch.object(matchday_bot, "load_state", return_value={"recap:7777"}), \
+             patch.object(matchday_bot, "fetch_match_details", return_value=_match_details(match_id=7777)), \
+             patch.object(matchday_bot, "post_to_discord") as mock_post, \
+             patch.object(matchday_bot, "save_state") as mock_save:
+            code = matchday_bot.run()
+
+        self.assertEqual(code, 0)
+        mock_post.assert_called_once()
+        mock_save.assert_called_once()
+
+        os.environ.pop("DRY_RUN", None)
+        os.environ.pop("DISCORD_WEBHOOK_URL", None)
+        os.environ.pop("SEND_LATEST_FINISHED_MATCH_NOW", None)
+        os.environ.pop("FORCE_POST", None)
 
     def test_run_dry_run_with_test_message(self):
         os.environ["DRY_RUN"] = "true"

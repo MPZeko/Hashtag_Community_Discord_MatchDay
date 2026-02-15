@@ -41,6 +41,20 @@ on:
         required: false
         type: boolean
         default: false
+      send_latest_finished_match_now:
+        description: "Post latest finished match recap to Discord"
+        required: false
+        type: boolean
+        default: false
+      force_post:
+        description: "Repost latest finished recap even if already posted"
+        required: false
+        type: boolean
+        default: false
+      max_finished_age_hours:
+        description: "Maximum age in hours for selecting latest finished match"
+        required: false
+        default: "168"
 
 env:
   FAST_WINDOW_BEFORE_MINUTES: "60"
@@ -172,6 +186,9 @@ jobs:
           MATCH_LOOKAHEAD_HOURS: ${{ github.event_name == 'workflow_dispatch' && inputs.match_lookahead_hours || vars.MATCH_LOOKAHEAD_HOURS || '24' }}
           DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || 'false' }}
           SEND_NEXT_MATCH_NOW: ${{ github.event_name == 'workflow_dispatch' && inputs.send_next_match_now || 'false' }}
+          SEND_LATEST_FINISHED_MATCH_NOW: ${{ github.event_name == 'workflow_dispatch' && inputs.send_latest_finished_match_now || 'false' }}
+          FORCE_POST: ${{ github.event_name == 'workflow_dispatch' && inputs.force_post || 'false' }}
+          MAX_FINISHED_AGE_HOURS: ${{ github.event_name == 'workflow_dispatch' && inputs.max_finished_age_hours || vars.MAX_FINISHED_AGE_HOURS || '168' }}
           DISCORD_TEST_MESSAGE: ${{ github.event_name == 'workflow_dispatch' && inputs.send_test_message && inputs.test_message || '' }}
         run: python bot/matchday_bot.py
 

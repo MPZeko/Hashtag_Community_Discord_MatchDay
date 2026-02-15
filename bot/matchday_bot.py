@@ -294,6 +294,123 @@ def find_next_upcoming_match(fixtures: dict[str, Any]) -> dict[str, Any] | None:
     return candidates[0][1]
 
 
+def is_finished_match(match: dict[str, Any]) -> bool:
+    status = match.get("status") or {}
+    if bool(status.get("finished")):
+        return True
+    reason = status.get("reason") or {}
+    short = str(reason.get("short") or "").upper()
+    long_text = str(reason.get("long") or "").lower()
+    if short in {"FT", "AET", "PEN"}:
+        return True
+    return "full-time" in long_text or "full time" in long_text
+
+
+def find_latest_finished_match(
+    fixtures: dict[str, Any],
+    max_finished_age_hours: int,
+    now: datetime | None = None,
+) -> dict[str, Any] | None:
+    now = now or datetime.now(timezone.utc)
+    earliest = now - timedelta(hours=max_finished_age_hours)
+    candidates: list[tuple[datetime, dict[str, Any]]] = []
+
+    fixture_items = fixtures.get("fixtures", {}).get("allFixtures", {}).get("fixtures", [])
+    for item in fixture_items:
+        match = _pick_match_obj(item)
+        if not match or not is_finished_match(match):
+            continue
+
+        try:
+            match_time = parse_match_utc(match)
+        except KeyError:
+            continue
+
+        if earliest <= match_time <= now:
+            candidates.append((match_time, match))
+
+    if not candidates:
+        return None
+
+    candidates.sort(key=lambda x: x[0], reverse=True)
+    return candidates[0][1]
+
+
+def _goal_side_label(shot: dict[str, Any], details: dict[str, Any]) -> str:
+    side = _goal_team_side(shot, details)
+    general = details.get("general") or {}
+    if side == "home":
+        return str((general.get("homeTeam") or {}).get("name") or "Home")
+    if side == "away":
+        return str((general.get("awayTeam") or {}).get("name") or "Away")
+    return side.title()
+
+
+def parse_recap_goals(details: dict[str, Any]) -> list[dict[str, str]]:
+    shots = (((details.get("content") or {}).get("shotmap") or {}).get("shots") or [])
+    if not isinstance(shots, list):
+        return []
+
+    goals: list[tuple[tuple[int, int], dict[str, str]]] = []
+    for shot in shots:
+        if not isinstance(shot, dict):
+            continue
+        event_type = str(shot.get("eventType") or "").lower()
+        if event_type != "goal":
+            continue
+
+        minute_text = _goal_minute(shot)
+        minute_base = int(shot.get("min") or 0)
+        minute_added = int(shot.get("minAdded") or 0)
+        player_name = str(shot.get("playerName") or shot.get("name") or "Unknown scorer")
+        own_goal = bool(shot.get("isOwnGoal"))
+
+        goals.append(
+            (
+                (minute_base, minute_added),
+                {
+                    "minute": minute_text,
+                    "player": player_name,
+                    "side": _goal_side_label(shot, details),
+                    "own_goal": "true" if own_goal else "false",
+                },
+            )
+        )
+
+    goals.sort(key=lambda item: item[0])
+    return [g for _, g in goals]
+
+
+def build_finished_match_recap_message(match: dict[str, Any], details: dict[str, Any], team_id: int) -> str:
+    home_name = str((match.get("home") or {}).get("name") or (details.get("general") or {}).get("homeTeam", {}).get("name") or "Home")
+    away_name = str((match.get("away") or {}).get("name") or (details.get("general") or {}).get("awayTeam", {}).get("name") or "Away")
+    kickoff_dt = parse_match_utc(match)
+    kickoff_london = kickoff_dt.astimezone(LONDON_TZ).strftime("%d-%m-%Y %H:%M")
+    scoreline = _extract_scoreline_from_details(details, match)
+    competition_line = build_competition_line(match)
+    stadium = match_stadium(match)
+    if not stadium:
+        stadium = str((details.get("general") or {}).get("venue", {}).get("name") or "")
+
+    lines = [
+        f"✅ **Full-time:** {home_name} vs {away_name}",
+        f"📊 Final score: {scoreline}",
+        f"🕒 Kickoff (London): {kickoff_london}",
+        competition_line,
+    ]
+    if stadium:
+        lines.append(f"🏟️ Stadium: {stadium}")
+
+    goals = parse_recap_goals(details)
+    if goals:
+        lines.append("⚽ Goals:")
+        for goal in goals:
+            og_marker = " (OG)" if goal["own_goal"] == "true" else ""
+            lines.append(f"- {goal['minute']}' {goal['player']} ({goal['side']}){og_marker}")
+
+    return "\n".join(lines)
+
+
 def build_next_match_message(match: dict[str, Any], team_id: int) -> str:
     hashtag_name, opponent_name = team_display_name(match, team_id)
     kickoff_dt = parse_match_utc(match)
@@ -489,6 +606,9 @@ def run() -> int:
     prematch_window_minutes = int(get_env("PREMATCH_WINDOW_MINUTES", "120"))
     match_lookahead_hours = int(get_env("MATCH_LOOKAHEAD_HOURS", "24"))
     send_next_match_now = env_as_bool("SEND_NEXT_MATCH_NOW", default=False)
+    send_latest_finished_match_now = env_as_bool("SEND_LATEST_FINISHED_MATCH_NOW", default=False)
+    force_post = env_as_bool("FORCE_POST", default=False)
+    max_finished_age_hours = int(get_env("MAX_FINISHED_AGE_HOURS", "168"))
     fast_window_before_minutes = int(get_env("FAST_WINDOW_BEFORE_MINUTES", "60"))
     fast_window_after_minutes = int(get_env("FAST_WINDOW_AFTER_MINUTES", "30"))
     expected_match_duration_minutes = int(get_env("EXPECTED_MATCH_DURATION_MINUTES", "120"))
@@ -507,6 +627,38 @@ def run() -> int:
         return 0
 
     fixtures = fetch_team_fixtures(team_id)
+
+    if send_latest_finished_match_now:
+        latest_match = find_latest_finished_match(fixtures, max_finished_age_hours=max_finished_age_hours)
+        if not latest_match:
+            print("No recent finished match found.")
+            return 0
+
+        match_id = str(latest_match.get("id") or "")
+        if not match_id:
+            print("Latest finished match has no match id; skipping recap post.")
+            return 0
+
+        recap_event_id = f"recap:{match_id}"
+        posted_event_ids = load_state()
+        print(f"State loaded from {STATE_FILE}, ids={len(posted_event_ids)}")
+
+        if recap_event_id in posted_event_ids and not force_post:
+            print(f"Recap already posted for matchId={match_id}. Use FORCE_POST=true to repost.")
+            return 0
+
+        details = fetch_match_details(match_id)
+        recap_message = build_finished_match_recap_message(latest_match, details, team_id)
+
+        if dry_run:
+            print(f"[DRY_RUN] Would post latest finished match recap -> {recap_message}")
+        else:
+            post_to_discord(webhook_url, recap_message)
+            posted_event_ids.add(recap_event_id)
+            save_state(posted_event_ids)
+            print(f"Posted latest finished match recap for matchId={match_id}")
+            print(f"State saved to {STATE_FILE}, ids={len(posted_event_ids)}")
+        return 0
 
     if send_next_match_now:
         next_match = find_next_upcoming_match(fixtures)

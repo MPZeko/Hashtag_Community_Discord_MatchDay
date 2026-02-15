@@ -12,9 +12,10 @@ Automated bot that fetches match data from FotMob for **Hashtag United** and pos
   - half-time
   - full-time
   - cancelled matches
+  - latest finished match recap (manual mode) with goal scorers + minutes
 - Includes kickoff time (London), competition + round, and stadium/venue when available
 - Prevents duplicate posts with persisted state (`.state/posted_events.json`)
-- Supports manual testing modes in GitHub Actions (`dry_run`, `send_test_message`, `send_next_match_now`)
+- Supports manual testing modes in GitHub Actions (`dry_run`, `send_test_message`, `send_next_match_now`, `send_latest_finished_match_now`)
 - Uses artifact-based state persistence in GitHub Actions (`matchday-state`)
 
 ## Setup
@@ -62,6 +63,9 @@ In **Run workflow**, use these key options:
 - **Safe diagnostics**: `dry_run = true`
 - **Webhook connectivity test**: `dry_run = false`, `send_test_message = true`
 - **Force next match post**: `dry_run = false`, `send_next_match_now = true`
+- **Post latest finished recap**: `dry_run = false`, `send_latest_finished_match_now = true`
+  - Optional: `force_post = true` to repost same recap
+  - Optional: `max_finished_age_hours = 168` to limit how old finished match can be
 - **Payload diagnostics**: `debug_fotmob_payload = true`
 
 ## GitHub Actions behavior
@@ -93,6 +97,9 @@ Manual `workflow_dispatch` inputs:
 - `send_test_message`
 - `test_message`
 - `send_next_match_now`
+- `send_latest_finished_match_now`
+- `force_post`
+- `max_finished_age_hours`
 - `debug_fotmob_payload`
 
 ## Notes
