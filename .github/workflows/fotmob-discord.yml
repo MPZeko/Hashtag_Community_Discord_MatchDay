@@ -17,22 +17,6 @@ on:
         description: "How many hours ahead to consider fixtures for posting/debug"
         required: false
         default: "24"
-      fast_window_before_minutes:
-        description: "Fast polling starts this many minutes before kickoff"
-        required: false
-        default: "60"
-      fast_window_after_minutes:
-        description: "Fast polling continues this many minutes after expected full-time"
-        required: false
-        default: "30"
-      expected_match_duration_minutes:
-        description: "Expected match duration used for polling window calculations"
-        required: false
-        default: "120"
-      slow_poll_interval_minutes:
-        description: "Outside fast window, process only every N minutes"
-        required: false
-        default: "30"
       dry_run:
         description: "Run without posting to Discord (prints what would be posted)"
         required: false
@@ -58,6 +42,12 @@ on:
         type: boolean
         default: false
 
+env:
+  FAST_WINDOW_BEFORE_MINUTES: "60"
+  FAST_WINDOW_AFTER_MINUTES: "30"
+  EXPECTED_MATCH_DURATION_MINUTES: "120"
+  SLOW_POLL_INTERVAL_MINUTES: "30"
+
 jobs:
   post-updates:
     runs-on: ubuntu-latest
@@ -74,6 +64,19 @@ jobs:
 
       - name: Install dependencies
         run: pip install -r requirements.txt
+
+      - name: Restore previous state artifact
+        uses: dawidd6/action-download-artifact@v3
+        continue-on-error: true
+        with:
+          workflow: fotmob-discord.yml
+          branch: ${{ github.ref_name }}
+          name: matchday-state
+          path: .state
+          if_no_artifact_found: warn
+
+      - name: Ensure state directory exists
+        run: mkdir -p .state
 
       - name: Debug FotMob payload
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.debug_fotmob_payload }}
@@ -138,7 +141,6 @@ jobs:
           print(f"match_lookahead_hours={lookahead_hours}")
           print(f"parsed_matches_in_bot_window={len(in_bot_window)}")
 
-          # Show nearest match to current time so debug output is relevant and not just oldest item.
           target_pool = in_bot_window if in_bot_window else with_utc
           if target_pool:
               match = min(target_pool, key=lambda m: abs((parse_utc(m) - now).total_seconds()))
@@ -162,30 +164,22 @@ jobs:
               print(json.dumps(fixtures[0], ensure_ascii=False)[:1500])
           PY
 
-      - name: Restore state cache
-        uses: actions/cache@v4
-        with:
-          path: .state/posted_events.json
-          key: fotmob-state-${{ github.repository }}
-
       - name: Run matchday bot
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           TEAM_ID: ${{ github.event_name == 'workflow_dispatch' && inputs.team_id || vars.TEAM_ID || '1186081' }}
           PREMATCH_WINDOW_MINUTES: ${{ github.event_name == 'workflow_dispatch' && inputs.prematch_window_minutes || vars.PREMATCH_WINDOW_MINUTES || '120' }}
           MATCH_LOOKAHEAD_HOURS: ${{ github.event_name == 'workflow_dispatch' && inputs.match_lookahead_hours || vars.MATCH_LOOKAHEAD_HOURS || '24' }}
-          FAST_WINDOW_BEFORE_MINUTES: ${{ github.event_name == 'workflow_dispatch' && inputs.fast_window_before_minutes || vars.FAST_WINDOW_BEFORE_MINUTES || '60' }}
-          FAST_WINDOW_AFTER_MINUTES: ${{ github.event_name == 'workflow_dispatch' && inputs.fast_window_after_minutes || vars.FAST_WINDOW_AFTER_MINUTES || '30' }}
-          EXPECTED_MATCH_DURATION_MINUTES: ${{ github.event_name == 'workflow_dispatch' && inputs.expected_match_duration_minutes || vars.EXPECTED_MATCH_DURATION_MINUTES || '120' }}
-          SLOW_POLL_INTERVAL_MINUTES: ${{ github.event_name == 'workflow_dispatch' && inputs.slow_poll_interval_minutes || vars.SLOW_POLL_INTERVAL_MINUTES || '30' }}
           DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || 'false' }}
           SEND_NEXT_MATCH_NOW: ${{ github.event_name == 'workflow_dispatch' && inputs.send_next_match_now || 'false' }}
           DISCORD_TEST_MESSAGE: ${{ github.event_name == 'workflow_dispatch' && inputs.send_test_message && inputs.test_message || '' }}
         run: python bot/matchday_bot.py
 
-      - name: Save state cache
-        uses: actions/cache/save@v4
+      - name: Upload state artifact
         if: always()
+        uses: actions/upload-artifact@v4
         with:
+          name: matchday-state
           path: .state/posted_events.json
-          key: fotmob-state-${{ github.repository }}
+          if-no-files-found: warn
+          retention-days: 14

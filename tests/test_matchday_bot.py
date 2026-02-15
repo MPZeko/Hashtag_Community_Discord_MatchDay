@@ -1,6 +1,9 @@
+import json
 import os
+import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from unittest.mock import patch
 
 from bot import matchday_bot
@@ -9,9 +12,13 @@ from bot.matchday_bot import (
     _request_json,
     build_events,
     build_next_match_message,
+    collect_live_goal_events,
     env_as_bool,
     find_next_upcoming_match,
+    load_state,
     match_score,
+    parse_goal_events,
+    save_state,
     should_run_event_pipeline,
 )
 
@@ -44,6 +51,32 @@ def _base_match(status_overrides=None, minutes_from_now=60, match_id=999):
         "tournament": {"name": "League"},
         "roundName": "Round 1",
         "venue": {"name": "Parkside"},
+    }
+
+
+def _match_details(match_id=999):
+    return {
+        "general": {
+            "homeTeam": {"id": 1186081, "name": "Hashtag United", "score": 1},
+            "awayTeam": {"id": 123, "name": "Opponent", "score": 0},
+            "status": {"scoreStr": "1 - 0"},
+        },
+        "content": {
+            "shotmap": {
+                "shots": [
+                    {
+                        "eventType": "Goal",
+                        "min": 52,
+                        "minAdded": 0,
+                        "playerName": "Player A",
+                        "assistPlayerName": "Player B",
+                        "teamId": 1186081,
+                        "isOwnGoal": False,
+                    }
+                ]
+            }
+        },
+        "matchId": match_id,
     }
 
 
@@ -128,6 +161,53 @@ class TestMatchDayBot(unittest.TestCase):
         self.assertIn("🏆 League Round 1", message)
         self.assertIn("🏟️ Stadium: Parkside", message)
 
+    def test_parse_goal_events_contains_minute_scorer_and_scoreline(self):
+        match = _base_match(
+            status_overrides={"started": True, "finished": False},
+            minutes_from_now=-15,
+            match_id=444,
+        )
+        details = _match_details(match_id=444)
+        goals = parse_goal_events(match, details, 1186081)
+        self.assertEqual(len(goals), 1)
+        goal = goals[0]
+        self.assertIn("52' GOAL", goal.message)
+        self.assertIn("Scorer: Player A", goal.message)
+        self.assertIn("Hashtag United 1-0 Opponent", goal.message)
+        self.assertIn("Assist: Player B", goal.message)
+
+    def test_goal_event_id_is_stable_for_dedupe(self):
+        match = _base_match(status_overrides={"started": True, "finished": False}, match_id=555)
+        details = _match_details(match_id=555)
+        a = parse_goal_events(match, details, 1186081)[0].event_id
+        b = parse_goal_events(match, details, 1186081)[0].event_id
+        self.assertEqual(a, b)
+
+    def test_collect_live_goal_events_fetches_only_live_matches(self):
+        live_match = _base_match(status_overrides={"started": True, "finished": False}, match_id=1001)
+        finished_match = _base_match(status_overrides={"started": True, "finished": True}, match_id=1002)
+        fixtures = _fixtures([live_match, finished_match])
+
+        with patch("bot.matchday_bot.fetch_match_details", return_value=_match_details(match_id=1001)) as mock_fetch:
+            events = collect_live_goal_events(fixtures, 1186081)
+
+        self.assertEqual(len(events), 1)
+        mock_fetch.assert_called_once_with("1001")
+
+    def test_state_migration_from_legacy_list(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "state.json"
+            path.write_text(json.dumps(["a", "b"]), encoding="utf-8")
+            ids = load_state(path)
+            self.assertEqual(ids, {"a", "b"})
+
+    def test_save_state_writes_new_schema(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "state.json"
+            save_state({"x", "y"}, path)
+            data = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(data.get("schema_version"), 2)
+            self.assertEqual(set(data.get("posted_event_ids", [])), {"x", "y"})
 
     def test_should_run_event_pipeline_fast_window_true(self):
         match = _base_match(minutes_from_now=40)
@@ -145,7 +225,6 @@ class TestMatchDayBot(unittest.TestCase):
         )
 
     def test_should_run_event_pipeline_slow_window_respects_interval(self):
-        # Build a fixture far away from now so fast window is inactive.
         fixtures = _fixture(_base_match(minutes_from_now=5 * 24 * 60))
         now_non_boundary = datetime(2026, 2, 14, 10, 7, tzinfo=timezone.utc)
         now_boundary = datetime(2026, 2, 14, 10, 30, tzinfo=timezone.utc)
