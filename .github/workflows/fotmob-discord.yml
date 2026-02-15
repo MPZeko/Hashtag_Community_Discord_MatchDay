@@ -189,6 +189,7 @@ jobs:
           SEND_LATEST_FINISHED_MATCH_NOW: ${{ github.event_name == 'workflow_dispatch' && inputs.send_latest_finished_match_now || 'false' }}
           FORCE_POST: ${{ github.event_name == 'workflow_dispatch' && inputs.force_post || 'false' }}
           MAX_FINISHED_AGE_HOURS: ${{ github.event_name == 'workflow_dispatch' && inputs.max_finished_age_hours || vars.MAX_FINISHED_AGE_HOURS || '168' }}
+          DEBUG_FOTMOB_PAYLOAD: ${{ github.event_name == 'workflow_dispatch' && inputs.debug_fotmob_payload || 'false' }}
           DISCORD_TEST_MESSAGE: ${{ github.event_name == 'workflow_dispatch' && inputs.send_test_message && inputs.test_message || '' }}
         run: python bot/matchday_bot.py
 

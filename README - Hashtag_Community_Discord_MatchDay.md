@@ -12,7 +12,7 @@ Automated bot that fetches match data from FotMob for **Hashtag United** and pos
   - half-time
   - full-time
   - cancelled matches
-  - latest finished match recap (manual mode) with goal scorers + minutes
+  - latest finished match recap (manual mode) with goal scorers + minutes (or explicit N/A if unavailable)
 - Includes kickoff time (London), competition + round, and stadium/venue when available
 - Prevents duplicate posts with persisted state (`.state/posted_events.json`)
 - Supports manual testing modes in GitHub Actions (`dry_run`, `send_test_message`, `send_next_match_now`, `send_latest_finished_match_now`)
@@ -66,7 +66,9 @@ In **Run workflow**, use these key options:
 - **Post latest finished recap**: `dry_run = false`, `send_latest_finished_match_now = true`
   - Optional: `force_post = true` to repost same recap
   - Optional: `max_finished_age_hours = 168` to limit how old finished match can be
-- **Payload diagnostics**: `debug_fotmob_payload = true`
+  - Recap now includes final score, London kickoff, competition/stage, venue and goal list
+  - If FotMob does not expose goal incidents, message shows: `⚽ Goals: N/A (source did not provide goal events)`
+- **Payload diagnostics**: `debug_fotmob_payload = true` (logs recap source sections and goals parsed count)
 
 ## GitHub Actions behavior
 

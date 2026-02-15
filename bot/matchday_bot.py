@@ -336,34 +336,121 @@ def find_latest_finished_match(
     return candidates[0][1]
 
 
-def _goal_side_label(shot: dict[str, Any], details: dict[str, Any]) -> str:
-    side = _goal_team_side(shot, details)
+def _goal_side_label_for_recap(event: dict[str, Any], details: dict[str, Any]) -> str:
+    """Return Home/Away label for recap goal lines."""
+    team_id = event.get("teamId")
     general = details.get("general") or {}
-    if side == "home":
-        return str((general.get("homeTeam") or {}).get("name") or "Home")
-    if side == "away":
-        return str((general.get("awayTeam") or {}).get("name") or "Away")
-    return side.title()
+    home_id = (general.get("homeTeam") or {}).get("id")
+    away_id = (general.get("awayTeam") or {}).get("id")
+
+    if team_id is not None:
+        if home_id is not None and team_id == home_id:
+            return "Home"
+        if away_id is not None and team_id == away_id:
+            return "Away"
+
+    side = str(event.get("side") or event.get("team") or event.get("homeAway") or "").lower()
+    if side.startswith("home"):
+        return "Home"
+    if side.startswith("away"):
+        return "Away"
+    return "Unknown"
+
+
+def _extract_event_type(event: dict[str, Any]) -> str:
+    return str(
+        event.get("eventType")
+        or event.get("type")
+        or event.get("event")
+        or event.get("incidentType")
+        or event.get("eventName")
+        or ""
+    ).lower()
+
+
+def _extract_minute_parts(event: dict[str, Any]) -> tuple[int, int, str]:
+    minute = event.get("min")
+    if minute is None:
+        minute = event.get("minute")
+    if minute is None:
+        minute = event.get("time")
+
+    added = event.get("minAdded")
+    if added is None:
+        added = event.get("addedTime")
+
+    try:
+        minute_base = int(minute)
+    except (TypeError, ValueError):
+        minute_base = 0
+    try:
+        minute_added = int(added or 0)
+    except (TypeError, ValueError):
+        minute_added = 0
+
+    if minute is None:
+        minute_text = "?"
+    elif minute_added > 0:
+        minute_text = f"{minute_base}+{minute_added}"
+    else:
+        minute_text = str(minute_base)
+
+    return minute_base, minute_added, minute_text
+
+
+def _extract_player_name(event: dict[str, Any]) -> str:
+    if event.get("playerName"):
+        return str(event["playerName"])
+    if event.get("name"):
+        return str(event["name"])
+    if isinstance(event.get("player"), dict) and event["player"].get("name"):
+        return str(event["player"]["name"])
+    return "Unknown scorer"
+
+
+def _find_fallback_goal_events(details: dict[str, Any]) -> tuple[list[dict[str, Any]], str]:
+    content = details.get("content") or {}
+
+    match_facts = content.get("matchFacts") or details.get("matchFacts") or {}
+    facts_events = match_facts.get("events")
+    if isinstance(facts_events, list):
+        return facts_events, "matchFacts.events"
+
+    facts_incidents = match_facts.get("incidents")
+    if isinstance(facts_incidents, list):
+        return facts_incidents, "matchFacts.incidents"
+
+    incidents = content.get("incidents") or details.get("incidents")
+    if isinstance(incidents, list):
+        return incidents, "incidents"
+
+    events = content.get("events") or details.get("events")
+    if isinstance(events, list):
+        return events, "events"
+
+    return [], "none"
 
 
 def parse_recap_goals(details: dict[str, Any]) -> list[dict[str, str]]:
     shots = (((details.get("content") or {}).get("shotmap") or {}).get("shots") or [])
-    if not isinstance(shots, list):
-        return []
+    source_name = "content.shotmap.shots"
+    source_events: list[dict[str, Any]]
+
+    if isinstance(shots, list) and shots:
+        source_events = [item for item in shots if isinstance(item, dict)]
+    else:
+        source_events, source_name = _find_fallback_goal_events(details)
+        source_events = [item for item in source_events if isinstance(item, dict)]
 
     goals: list[tuple[tuple[int, int], dict[str, str]]] = []
-    for shot in shots:
-        if not isinstance(shot, dict):
-            continue
-        event_type = str(shot.get("eventType") or "").lower()
-        if event_type != "goal":
+    for event in source_events:
+        event_type = _extract_event_type(event)
+        if "goal" not in event_type:
             continue
 
-        minute_text = _goal_minute(shot)
-        minute_base = int(shot.get("min") or 0)
-        minute_added = int(shot.get("minAdded") or 0)
-        player_name = str(shot.get("playerName") or shot.get("name") or "Unknown scorer")
-        own_goal = bool(shot.get("isOwnGoal"))
+        minute_base, minute_added, minute_text = _extract_minute_parts(event)
+        player_name = _extract_player_name(event)
+        own_goal = bool(event.get("isOwnGoal") or event.get("ownGoal"))
 
         goals.append(
             (
@@ -371,8 +458,9 @@ def parse_recap_goals(details: dict[str, Any]) -> list[dict[str, str]]:
                 {
                     "minute": minute_text,
                     "player": player_name,
-                    "side": _goal_side_label(shot, details),
+                    "side": _goal_side_label_for_recap(event, details),
                     "own_goal": "true" if own_goal else "false",
+                    "source": source_name,
                 },
             )
         )
@@ -381,13 +469,32 @@ def parse_recap_goals(details: dict[str, Any]) -> list[dict[str, str]]:
     return [g for _, g in goals]
 
 
+def build_recap_competition_line(match: dict[str, Any], details: dict[str, Any]) -> str:
+    general = details.get("general") or {}
+    competition = (
+        (match.get("tournament") or {}).get("name")
+        or general.get("parentLeagueName")
+        or general.get("leagueName")
+        or "Unknown competition"
+    )
+    stage = (
+        match_round(match)
+        or general.get("leagueRoundName")
+        or general.get("roundName")
+        or ""
+    )
+    if stage:
+        return f"🏆 {competition} ({stage})"
+    return f"🏆 {competition}"
+
+
 def build_finished_match_recap_message(match: dict[str, Any], details: dict[str, Any], team_id: int) -> str:
     home_name = str((match.get("home") or {}).get("name") or (details.get("general") or {}).get("homeTeam", {}).get("name") or "Home")
     away_name = str((match.get("away") or {}).get("name") or (details.get("general") or {}).get("awayTeam", {}).get("name") or "Away")
     kickoff_dt = parse_match_utc(match)
     kickoff_london = kickoff_dt.astimezone(LONDON_TZ).strftime("%d-%m-%Y %H:%M")
     scoreline = _extract_scoreline_from_details(details, match)
-    competition_line = build_competition_line(match)
+    competition_line = build_recap_competition_line(match, details)
     stadium = match_stadium(match)
     if not stadium:
         stadium = str((details.get("general") or {}).get("venue", {}).get("name") or "")
@@ -399,14 +506,16 @@ def build_finished_match_recap_message(match: dict[str, Any], details: dict[str,
         competition_line,
     ]
     if stadium:
-        lines.append(f"🏟️ Stadium: {stadium}")
+        lines.append(f"🏟️ {stadium}")
 
     goals = parse_recap_goals(details)
     if goals:
         lines.append("⚽ Goals:")
         for goal in goals:
-            og_marker = " (OG)" if goal["own_goal"] == "true" else ""
+            og_marker = " OG" if goal["own_goal"] == "true" else ""
             lines.append(f"- {goal['minute']}' {goal['player']} ({goal['side']}){og_marker}")
+    else:
+        lines.append("⚽ Goals: N/A (source did not provide goal events)")
 
     return "\n".join(lines)
 
@@ -609,6 +718,7 @@ def run() -> int:
     send_latest_finished_match_now = env_as_bool("SEND_LATEST_FINISHED_MATCH_NOW", default=False)
     force_post = env_as_bool("FORCE_POST", default=False)
     max_finished_age_hours = int(get_env("MAX_FINISHED_AGE_HOURS", "168"))
+    debug_fotmob_payload = env_as_bool("DEBUG_FOTMOB_PAYLOAD", default=False)
     fast_window_before_minutes = int(get_env("FAST_WINDOW_BEFORE_MINUTES", "60"))
     fast_window_after_minutes = int(get_env("FAST_WINDOW_AFTER_MINUTES", "30"))
     expected_match_duration_minutes = int(get_env("EXPECTED_MATCH_DURATION_MINUTES", "120"))
@@ -639,6 +749,22 @@ def run() -> int:
             print("Latest finished match has no match id; skipping recap post.")
             return 0
 
+        details = fetch_match_details(match_id)
+
+        if debug_fotmob_payload:
+            content = details.get("content") or {}
+            match_facts = content.get("matchFacts") or details.get("matchFacts") or {}
+            recap_goals = parse_recap_goals(details)
+            print(
+                "Recap debug: "
+                f"shotmap_present={isinstance((content.get('shotmap') or {}).get('shots'), list)}, "
+                f"events_present={isinstance(content.get('events'), list) or isinstance(details.get('events'), list)}, "
+                f"matchfacts_events_present={isinstance(match_facts.get('events'), list)}, "
+                f"matchfacts_incidents_present={isinstance(match_facts.get('incidents'), list)}, "
+                f"incidents_present={isinstance(content.get('incidents'), list) or isinstance(details.get('incidents'), list)}, "
+                f"goals_parsed={len(recap_goals)}"
+            )
+
         recap_event_id = f"recap:{match_id}"
         posted_event_ids = load_state()
         print(f"State loaded from {STATE_FILE}, ids={len(posted_event_ids)}")
@@ -647,7 +773,6 @@ def run() -> int:
             print(f"Recap already posted for matchId={match_id}. Use FORCE_POST=true to repost.")
             return 0
 
-        details = fetch_match_details(match_id)
         recap_message = build_finished_match_recap_message(latest_match, details, team_id)
 
         if dry_run:

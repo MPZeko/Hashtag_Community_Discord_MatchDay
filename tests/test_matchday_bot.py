@@ -20,6 +20,7 @@ from bot.matchday_bot import (
     load_state,
     match_score,
     parse_goal_events,
+    parse_recap_goals,
     save_state,
     should_run_event_pipeline,
 )
@@ -318,8 +319,46 @@ class TestMatchDayBot(unittest.TestCase):
         message = build_finished_match_recap_message(match, details, 1186081)
         self.assertIn("Final score: 2-1", message)
         self.assertIn("⚽ Goals:", message)
-        self.assertIn("12' Player A", message)
-        self.assertIn("55+2' Player B", message)
+        self.assertIn("12' Player A (Home)", message)
+        self.assertIn("55+2' Player B (Away)", message)
+        self.assertIn("🏆 League (Round 1)", message)
+
+    def test_parse_recap_goals_fallback_to_matchfacts_events(self):
+        details = {
+            "general": {
+                "homeTeam": {"id": 1, "name": "Home"},
+                "awayTeam": {"id": 2, "name": "Away"},
+            },
+            "content": {
+                "matchFacts": {
+                    "events": [
+                        {"eventType": "Goal", "minute": 88, "name": "Late Winner", "teamId": 1}
+                    ]
+                }
+            },
+        }
+        goals = parse_recap_goals(details)
+        self.assertEqual(len(goals), 1)
+        self.assertEqual(goals[0]["minute"], "88")
+        self.assertEqual(goals[0]["player"], "Late Winner")
+        self.assertEqual(goals[0]["side"], "Home")
+
+    def test_build_finished_recap_includes_goals_na_when_missing(self):
+        match = _base_match(
+            status_overrides={"started": True, "finished": True, "reason": {"short": "FT"}},
+            minutes_from_now=-90,
+            match_id=4010,
+        )
+        details = {
+            "general": {
+                "homeTeam": {"id": 1186081, "name": "Hashtag United", "score": 0},
+                "awayTeam": {"id": 123, "name": "Opponent", "score": 0},
+                "status": {"scoreStr": "0 - 0"},
+            },
+            "content": {},
+        }
+        message = build_finished_match_recap_message(match, details, 1186081)
+        self.assertIn("⚽ Goals: N/A (source did not provide goal events)", message)
 
     def test_recap_event_id_dedupe_respected(self):
         posted = {"recap:999"}
@@ -343,7 +382,7 @@ class TestMatchDayBot(unittest.TestCase):
             code = matchday_bot.run()
 
         self.assertEqual(code, 0)
-        mock_details.assert_not_called()
+        mock_details.assert_called_once_with("5555")
         mock_post.assert_not_called()
 
         os.environ.pop("DRY_RUN", None)
@@ -377,6 +416,29 @@ class TestMatchDayBot(unittest.TestCase):
         os.environ.pop("DISCORD_WEBHOOK_URL", None)
         os.environ.pop("SEND_LATEST_FINISHED_MATCH_NOW", None)
         os.environ.pop("FORCE_POST", None)
+
+    def test_recap_debug_logs_sections_and_goal_count(self):
+        os.environ["DRY_RUN"] = "true"
+        os.environ["SEND_LATEST_FINISHED_MATCH_NOW"] = "true"
+        os.environ["DEBUG_FOTMOB_PAYLOAD"] = "true"
+
+        match = _base_match(
+            status_overrides={"started": True, "finished": True, "reason": {"short": "FT"}},
+            minutes_from_now=-60,
+            match_id=6666,
+        )
+
+        with patch.object(matchday_bot, "fetch_team_fixtures", return_value=_fixture(match)),              patch.object(matchday_bot, "fetch_match_details", return_value=_match_details(match_id=6666)),              patch("builtins.print") as mock_print:
+            code = matchday_bot.run()
+
+        self.assertEqual(code, 0)
+        joined = " ".join(str(call.args[0]) for call in mock_print.call_args_list if call.args)
+        self.assertIn("Recap debug:", joined)
+        self.assertIn("goals_parsed=1", joined)
+
+        os.environ.pop("DRY_RUN", None)
+        os.environ.pop("SEND_LATEST_FINISHED_MATCH_NOW", None)
+        os.environ.pop("DEBUG_FOTMOB_PAYLOAD", None)
 
     def test_run_dry_run_with_test_message(self):
         os.environ["DRY_RUN"] = "true"
