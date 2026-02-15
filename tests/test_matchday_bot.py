@@ -377,6 +377,8 @@ class TestMatchDayBot(unittest.TestCase):
         }
         goals = extract_goals(details, get_recap_team_context(_base_match(match_id=1), details), "1")
         self.assertEqual(len(goals), 1)
+        self.assertEqual(goals[0]["base_minute"], 55)
+        self.assertEqual(goals[0]["added_time"], 4)
         self.assertEqual(goals[0]["minute_str"], "55+4")
         self.assertTrue(goals[0]["is_penalty"])
         self.assertEqual(goals[0]["team_label"], "Hashtag United")
@@ -476,6 +478,15 @@ class TestMatchDayBot(unittest.TestCase):
         self.assertNotIn("Unknown scorer", message)
         # ensure dedupe on duplicate incident id
         self.assertEqual(message.count("85' Evans Kouassi"), 1)
+
+        parsed = parse_recap_goals(details, get_recap_team_context(match, details), "9090")
+        minutes = [item["minute"] for item in parsed]
+        self.assertEqual(minutes, ["42", "45+4", "85", "90+11"])
+        self.assertEqual(parsed[1]["base_minute"], "45")
+        self.assertEqual(parsed[1]["added_time"], "4")
+        self.assertEqual(parsed[1]["is_penalty"], "true")
+        self.assertEqual(parsed[3]["base_minute"], "90")
+        self.assertEqual(parsed[3]["added_time"], "11")
 
     def test_build_finished_recap_includes_goals_na_when_missing(self):
         match = _base_match(

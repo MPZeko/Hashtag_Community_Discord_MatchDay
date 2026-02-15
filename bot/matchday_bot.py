@@ -610,6 +610,8 @@ def extract_goals(match_details: dict[str, Any], match_context: dict[str, Any], 
             (
                 (minute_base, minute_added),
                 {
+                    "base_minute": minute_base,
+                    "added_time": minute_added,
                     "minute_str": minute_text,
                     "player_name": player_name,
                     "team_label": team_label,
@@ -629,6 +631,8 @@ def parse_recap_goals(details: dict[str, Any], match_context: dict[str, Any], ma
     for goal in goals:
         parsed.append(
             {
+                "base_minute": str(goal["base_minute"]),
+                "added_time": str(goal["added_time"]),
                 "minute": str(goal["minute_str"]),
                 "player": str(goal["player_name"]),
                 "team_label": str(goal.get("team_label") or ""),
