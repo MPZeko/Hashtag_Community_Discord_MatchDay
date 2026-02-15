@@ -488,6 +488,65 @@ class TestMatchDayBot(unittest.TestCase):
         self.assertEqual(parsed[3]["base_minute"], "90")
         self.assertEqual(parsed[3]["added_time"], "11")
 
+    def test_filters_unknown_scorer_string(self):
+        match = _base_match(match_id=9191)
+        details = {
+            "general": {
+                "homeTeam": {"id": 1186081, "name": "Hashtag United", "score": 1},
+                "awayTeam": {"id": 123, "name": "Opponent", "score": 0},
+                "status": {"scoreStr": "1 - 0"},
+            },
+            "content": {
+                "events": [
+                    {"id": "a", "type": "Goal", "minute": 12, "playerName": "Unknown scorer", "teamId": 1186081},
+                    {"id": "b", "type": "Goal", "minute": 22, "playerName": "Real Scorer", "teamId": 1186081},
+                ]
+            },
+        }
+        message = build_finished_match_recap_message(match, details, 1186081)
+        self.assertNotIn("Unknown scorer", message)
+        self.assertIn("22' Real Scorer", message)
+
+    def test_merge_sources_prefers_richer_goal_data(self):
+        details = {
+            "general": {
+                "homeTeam": {"id": 1186081, "name": "Hashtag United"},
+                "awayTeam": {"id": 123, "name": "Opponent"},
+            },
+            "content": {
+                "shotmap": {
+                    "shots": [
+                        {"id": "g1", "eventType": "Goal", "minute": 45, "playerName": "Evans Kouassi", "teamId": 1186081}
+                    ]
+                },
+                "matchFacts": {
+                    "events": [
+                        {"id": "g1", "eventType": "PenaltyGoal", "minute": 45, "addedTime": 4, "playerName": "Evans Kouassi", "teamId": 1186081, "isPenalty": True}
+                    ]
+                },
+            },
+        }
+        match = _base_match(match_id=9292)
+        message = build_finished_match_recap_message(match, details, 1186081)
+        self.assertIn("45+4' Evans Kouassi (Pen.)", message)
+
+    def test_team_label_correct_for_both_teams(self):
+        details = {
+            "general": {
+                "homeTeam": {"id": 1186081, "name": "Hashtag United"},
+                "awayTeam": {"id": 2211, "name": "Carshalton Athletic"},
+            },
+            "content": {
+                "events": [
+                    {"id": "h1", "type": "Goal", "minute": 10, "playerName": "Home Player", "teamId": 1186081},
+                    {"id": "a1", "type": "Goal", "minute": 20, "playerName": "Away Player", "teamId": 2211},
+                ]
+            },
+        }
+        parsed = parse_recap_goals(details, get_recap_team_context(_base_match(match_id=9393), details), "9393")
+        self.assertEqual(parsed[0]["team_label"], "Hashtag United")
+        self.assertEqual(parsed[1]["team_label"], "Carshalton Athletic")
+
     def test_build_finished_recap_includes_goals_na_when_missing(self):
         match = _base_match(
             status_overrides={"started": True, "finished": True, "reason": {"short": "FT"}},

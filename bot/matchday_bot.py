@@ -527,10 +527,6 @@ def log_match_details_presence(details: dict[str, Any]) -> None:
 
 
 def _infer_team_label(event: dict[str, Any], context: dict[str, Any]) -> str:
-    is_home = event.get("isHome")
-    if isinstance(is_home, bool):
-        return context["home_team_name"] if is_home else context["away_team_name"]
-
     team_id = event.get("teamId")
     if team_id is None and isinstance(event.get("team"), dict):
         team_id = event["team"].get("id")
@@ -539,11 +535,16 @@ def _infer_team_label(event: dict[str, Any], context: dict[str, Any]) -> str:
     except (TypeError, ValueError):
         team_id_int = None
 
+    # teamId is source of truth when present.
     if team_id_int is not None:
         if context.get("home_team_id") is not None and team_id_int == context.get("home_team_id"):
             return context["home_team_name"]
         if context.get("away_team_id") is not None and team_id_int == context.get("away_team_id"):
             return context["away_team_name"]
+
+    is_home = event.get("isHome")
+    if isinstance(is_home, bool):
+        return context["home_team_name"] if is_home else context["away_team_name"]
 
     team_name = _team_name_from_event(event)
     if team_name:
@@ -557,72 +558,217 @@ def _infer_team_label(event: dict[str, Any], context: dict[str, Any]) -> str:
     return ""
 
 
+def _is_unknown_player_name(name: str) -> bool:
+    normalized = (name or "").strip().lower()
+    if normalized in {"", "unknown scorer", "unknown", "n/a"}:
+        return True
+    return "unknown" in normalized.split()
+
+
+def _parse_minute_string(raw: str) -> tuple[int, int] | None:
+    text = (raw or "").strip().replace("'", "")
+    if not text:
+        return None
+    if "+" in text:
+        left, right = text.split("+", 1)
+        try:
+            return int(left), int(right)
+        except ValueError:
+            return None
+    try:
+        return int(text), 0
+    except ValueError:
+        return None
+
+
+def _extract_minute_parts(event: dict[str, Any]) -> tuple[int, int, str]:
+    minute = event.get("min")
+    if minute is None:
+        minute = event.get("minute")
+
+    time_field = event.get("time")
+    if minute is None and isinstance(time_field, dict):
+        minute = time_field.get("normal") or time_field.get("minute")
+    elif minute is None and time_field is not None and not isinstance(time_field, dict):
+        minute = time_field
+
+    added = event.get("minAdded")
+    if added is None:
+        added = event.get("addedTime")
+    if added is None:
+        added = event.get("injuryTime")
+    if added is None and isinstance(time_field, dict):
+        added = time_field.get("added")
+
+    # String minute fallbacks like "45+4" / "90+11"
+    if minute is None:
+        minute_text_candidate = event.get("minuteStr") or event.get("timeStr")
+        if isinstance(minute_text_candidate, str):
+            parsed = _parse_minute_string(minute_text_candidate)
+            if parsed:
+                minute, added = parsed
+
+    if isinstance(minute, str) and "+" in minute and (added is None or str(added).strip() == ""):
+        parsed = _parse_minute_string(minute)
+        if parsed:
+            minute, added = parsed
+
+    try:
+        minute_base = int(minute)
+    except (TypeError, ValueError):
+        minute_base = 0
+    try:
+        minute_added = int(added or 0)
+    except (TypeError, ValueError):
+        minute_added = 0
+
+    minute_text = f"{minute_base}+{minute_added}" if minute_added > 0 else str(minute_base)
+    return minute_base, minute_added, minute_text
+
+
+def _extract_player_name(event: dict[str, Any]) -> str | None:
+    if event.get("playerName"):
+        return str(event["playerName"])
+    player = event.get("player")
+    if isinstance(player, dict):
+        if player.get("name"):
+            return str(player["name"])
+        if player.get("shortName"):
+            return str(player["shortName"])
+    if event.get("name"):
+        return str(event["name"])
+    return None
+
+
+def _is_penalty_event(event: dict[str, Any]) -> bool:
+    if bool(event.get("isPenalty") or event.get("penalty")):
+        return True
+    event_type = _extract_event_type(event)
+    return "pen" in event_type or "penalty" in event_type
+
+
+def _is_own_goal_event(event: dict[str, Any]) -> bool:
+    if bool(event.get("isOwnGoal") or event.get("ownGoal")):
+        return True
+    event_type = _extract_event_type(event)
+    return "own" in event_type
+
+
+def _event_score_signature(event: dict[str, Any]) -> str:
+    home_score = event.get("homeScore")
+    away_score = event.get("awayScore")
+    if home_score is None and away_score is None and isinstance(event.get("score"), str):
+        return str(event["score"])
+    return f"{home_score}-{away_score}"
+
+
+def _goal_quality(goal: dict[str, Any]) -> int:
+    score = 0
+    if goal.get("added_time", 0) > 0:
+        score += 3
+    if goal.get("is_penalty"):
+        score += 2
+    if goal.get("team_label"):
+        score += 2
+    if len(str(goal.get("player_name") or "")) > 4:
+        score += 1
+    return score
+
+
 def extract_goals(match_details: dict[str, Any], match_context: dict[str, Any], match_id: str) -> list[dict[str, Any]]:
-    """Extract recap goals from matchDetails using shotmap then fallback event sections."""
+    """Extract recap goals from matchDetails by collecting + merging all known sources."""
     candidates = _collect_goal_event_candidates(match_details)
 
-    ordered_sources = [
-        "content.shotmap.shots",
-        "content.matchFacts.events",
-        "content.matchFacts.events.events",
-        "content.events",
-        "content.incidents",
-    ]
+    merged: dict[str, dict[str, Any]] = {}
+    candidate_counts: dict[str, int] = {}
 
-    source_events: list[dict[str, Any]] = []
-    for source in ordered_sources:
-        events = candidates.get(source, [])
-        if events:
-            source_events = events
-            break
+    for source, source_events in candidates.items():
+        goal_candidates = 0
+        for event in source_events:
+            event_type = _extract_event_type(event)
+            if not _is_goal_event_type(event_type):
+                continue
 
-    dedupe_keys: set[str] = set()
-    content_keys: set[str] = set()
-    goals: list[tuple[tuple[int, int], dict[str, Any]]] = []
-    for event in source_events:
-        event_type = _extract_event_type(event)
-        if not _is_goal_event_type(event_type):
-            continue
+            player_name = _extract_player_name(event)
+            if not player_name or _is_unknown_player_name(player_name):
+                continue
 
-        player_name = _extract_player_name(event)
-        if not player_name:
-            continue
-
-        minute_base, minute_added, minute_text = _extract_minute_parts(event)
-
-        incident_id = event.get("incidentId") or event.get("id")
-        if incident_id is not None:
-            unique = f"incident:{incident_id}"
-        else:
+            minute_base, minute_added, minute_text = _extract_minute_parts(event)
             team_label = _infer_team_label(event, match_context)
             team_id = event.get("teamId")
-            unique = f"fallback:{match_id}:{minute_text}:{team_id}:{team_label}:{player_name}"
+            if team_id is None and isinstance(event.get("team"), dict):
+                team_id = event["team"].get("id")
 
-        team_label = _infer_team_label(event, match_context)
-        content_key = f"{minute_text}:{team_label}:{player_name}"
+            incident_id = event.get("incidentId") or event.get("id")
+            if incident_id is not None:
+                key = f"incident:{incident_id}"
+            else:
+                key = (
+                    f"fallback:{match_id}:{minute_base}:{minute_added}:{team_id}:"
+                    f"{player_name}:{_event_score_signature(event)}"
+                )
 
-        if unique in dedupe_keys or content_key in content_keys:
-            continue
-        dedupe_keys.add(unique)
-        content_keys.add(content_key)
+            goal_candidates += 1
+            candidate = {
+                "base_minute": minute_base,
+                "added_time": minute_added,
+                "minute_str": minute_text,
+                "player_name": player_name,
+                "team_label": team_label,
+                "is_penalty": _is_penalty_event(event),
+                "is_own_goal": _is_own_goal_event(event),
+            }
 
-        goals.append(
-            (
-                (minute_base, minute_added),
-                {
-                    "base_minute": minute_base,
-                    "added_time": minute_added,
-                    "minute_str": minute_text,
-                    "player_name": player_name,
-                    "team_label": team_label,
-                    "is_penalty": bool(event.get("isPenalty") or event.get("penalty")),
-                    "is_own_goal": bool(event.get("isOwnGoal") or event.get("ownGoal")),
-                },
-            )
-        )
+            existing = merged.get(key)
+            if existing is None:
+                merged[key] = candidate
+                continue
 
-    goals.sort(key=lambda item: item[0])
-    return [goal for _, goal in goals]
+            # Merge richer data fields.
+            if existing.get("added_time", 0) == 0 and candidate.get("added_time", 0) > 0:
+                existing["added_time"] = candidate["added_time"]
+                existing["base_minute"] = candidate["base_minute"]
+                existing["minute_str"] = candidate["minute_str"]
+            if not existing.get("is_penalty") and candidate.get("is_penalty"):
+                existing["is_penalty"] = True
+            if not existing.get("is_own_goal") and candidate.get("is_own_goal"):
+                existing["is_own_goal"] = True
+            if not existing.get("team_label") and candidate.get("team_label"):
+                existing["team_label"] = candidate["team_label"]
+            if len(str(existing.get("player_name") or "")) < len(str(candidate.get("player_name") or "")):
+                existing["player_name"] = candidate["player_name"]
+
+            # Prefer higher-quality aggregate when needed.
+            if _goal_quality(candidate) > _goal_quality(existing):
+                existing.update(candidate)
+
+        candidate_counts[source] = goal_candidates
+
+    # Secondary dedupe by visible content to avoid duplicate output lines from parallel sources.
+    by_content: dict[str, dict[str, Any]] = {}
+    for goal in merged.values():
+        content_key = f"{goal['minute_str']}:{goal.get('team_label','')}:{goal['player_name']}"
+        existing = by_content.get(content_key)
+        if existing is None or _goal_quality(goal) > _goal_quality(existing):
+            by_content[content_key] = goal
+
+    goals = sorted(by_content.values(), key=lambda goal: (goal["base_minute"], goal["added_time"]))
+
+    if env_as_bool("DEBUG_FOTMOB_PAYLOAD", default=False):
+        print(f"Recap debug: goal_candidates_per_source={candidate_counts}")
+        preview = [
+            {
+                "minute": goal["minute_str"],
+                "player": goal["player_name"],
+                "team": goal["team_label"],
+                "pen": goal["is_penalty"],
+                "og": goal["is_own_goal"],
+            }
+            for goal in goals[:10]
+        ]
+        print(f"Recap debug: merged_goals_count={len(goals)}, preview={preview}")
+
+    return goals
 
 
 def parse_recap_goals(details: dict[str, Any], match_context: dict[str, Any], match_id: str) -> list[dict[str, str]]:

@@ -67,9 +67,15 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      actions: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Print running commit SHA
+        run: |
+          echo "SHA=$(git rev-parse --short HEAD)"
+          git log -1 --oneline
 
       - name: Set up Python
         uses: actions/setup-python@v5
