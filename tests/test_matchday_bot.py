@@ -18,6 +18,7 @@ from bot.matchday_bot import (
     find_next_upcoming_match,
     find_latest_finished_match,
     fetch_match_details,
+    get_recap_team_context,
     load_state,
     match_score,
     parse_goal_events,
@@ -349,8 +350,8 @@ class TestMatchDayBot(unittest.TestCase):
         message = build_finished_match_recap_message(match, details, 1186081)
         self.assertIn("Final score: 2-1", message)
         self.assertIn("⚽ Goals:", message)
-        self.assertIn("12' Player A (Home)", message)
-        self.assertIn("55+2' Player B (Away)", message)
+        self.assertIn("12' Player A (Hashtag United)", message)
+        self.assertIn("55+2' Player B (Opponent)", message)
         self.assertIn("🏆 League (Round 1)", message)
 
     def test_extract_goals_from_shotmap_with_penalty_and_stoppage(self):
@@ -374,11 +375,11 @@ class TestMatchDayBot(unittest.TestCase):
                 }
             },
         }
-        goals = extract_goals(details)
+        goals = extract_goals(details, get_recap_team_context(_base_match(match_id=1), details), "1")
         self.assertEqual(len(goals), 1)
         self.assertEqual(goals[0]["minute_str"], "55+4")
         self.assertTrue(goals[0]["is_penalty"])
-        self.assertTrue(goals[0]["is_home"])
+        self.assertEqual(goals[0]["team_label"], "Hashtag United")
 
     def test_parse_recap_goals_fallback_to_matchfacts_events(self):
         details = {
@@ -394,11 +395,11 @@ class TestMatchDayBot(unittest.TestCase):
                 }
             },
         }
-        goals = parse_recap_goals(details)
+        goals = parse_recap_goals(details, get_recap_team_context(_base_match(match_id=1), details), "1")
         self.assertEqual(len(goals), 1)
         self.assertEqual(goals[0]["minute"], "88")
         self.assertEqual(goals[0]["player"], "Late Winner")
-        self.assertEqual(goals[0]["side"], "Home")
+        self.assertEqual(goals[0]["team_label"], "Home")
 
     def test_parse_recap_goals_fallback_to_incidents_section(self):
         details = {
@@ -412,11 +413,11 @@ class TestMatchDayBot(unittest.TestCase):
                 ]
             },
         }
-        goals = parse_recap_goals(details)
+        goals = parse_recap_goals(details, get_recap_team_context(_base_match(match_id=1), details), "1")
         self.assertEqual(len(goals), 1)
         self.assertEqual(goals[0]["minute"], "42")
         self.assertEqual(goals[0]["player"], "Luke Read")
-        self.assertEqual(goals[0]["side"], "Away")
+        self.assertEqual(goals[0]["team_label"], "Opponent")
 
     def test_build_finished_recap_renders_penalty_marker(self):
         match = _base_match(
@@ -439,7 +440,42 @@ class TestMatchDayBot(unittest.TestCase):
             },
         }
         message = build_finished_match_recap_message(match, details, 1186081)
-        self.assertIn("55+4' Evans Kouassi (Pen.) (Home)", message)
+        self.assertIn("55+4' Evans Kouassi (Pen.) (Hashtag United)", message)
+
+    def test_parse_goal_list_sample_filters_markers_dedupes_and_formats(self):
+        match = _base_match(match_id=9090)
+        match["home"] = {"id": 1186081, "name": "Hashtag United"}
+        match["away"] = {"id": 2211, "name": "Carshalton Athletic"}
+        details = {
+            "matchId": 9090,
+            "general": {
+                "homeTeam": {"id": 1186081, "name": "Hashtag United"},
+                "awayTeam": {"id": 2211, "name": "Carshalton Athletic"},
+                "status": {"scoreStr": "3 - 1"},
+            },
+            "content": {
+                "events": [
+                    {"id": "e1", "type": "Goal", "minute": 42, "name": "Luke Read", "teamId": 2211},
+                    {"id": "e2", "type": "Goal", "minute": 45, "addedTime": 4, "playerName": "Evans Kouassi", "teamId": 1186081, "isPenalty": True},
+                    {"id": "e3", "type": "Goal", "minute": 85, "player": {"name": "Evans Kouassi"}, "teamId": 1186081},
+                    {"id": "e4", "type": "Goal", "minute": 90, "injuryTime": 11, "player": {"shortName": "Chaynie Burgin"}, "isHome": True},
+                    {"id": "dup", "type": "Goal", "minute": 85, "player": {"name": "Evans Kouassi"}, "teamId": 1186081},
+                    {"id": "dup", "type": "Goal", "minute": 85, "player": {"name": "Evans Kouassi"}, "teamId": 1186081},
+                    {"id": "ht", "type": "HT", "minute": 45},
+                    {"id": "ft", "type": "full", "minute": 90},
+                    {"id": "unknown", "type": "goal", "minute": 91},
+                ]
+            },
+        }
+
+        message = build_finished_match_recap_message(match, details, 1186081)
+        self.assertIn("42' Luke Read (Carshalton Athletic)", message)
+        self.assertIn("45+4' Evans Kouassi (Pen.) (Hashtag United)", message)
+        self.assertIn("85' Evans Kouassi (Hashtag United)", message)
+        self.assertIn("90+11' Chaynie Burgin (Hashtag United)", message)
+        self.assertNotIn("Unknown scorer", message)
+        # ensure dedupe on duplicate incident id
+        self.assertEqual(message.count("85' Evans Kouassi"), 1)
 
     def test_build_finished_recap_includes_goals_na_when_missing(self):
         match = _base_match(

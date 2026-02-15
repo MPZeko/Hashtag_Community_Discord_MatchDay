@@ -375,27 +375,36 @@ def find_latest_finished_match(
     return candidates[0][1]
 
 
-def _goal_side_label_for_recap(event: dict[str, Any], details: dict[str, Any]) -> str:
-    """Return Home/Away label for recap goal lines."""
-    team_id = event.get("teamId")
-    if team_id is None and isinstance(event.get("team"), dict):
-        team_id = event["team"].get("id")
+def _team_name_from_event(event: dict[str, Any]) -> str:
+    if isinstance(event.get("team"), dict) and event["team"].get("name"):
+        return str(event["team"]["name"])
+    if event.get("teamName"):
+        return str(event["teamName"])
+    return ""
+
+
+def get_recap_team_context(match: dict[str, Any], details: dict[str, Any]) -> dict[str, Any]:
     general = details.get("general") or {}
-    home_id = (general.get("homeTeam") or {}).get("id")
-    away_id = (general.get("awayTeam") or {}).get("id")
+    home_from_details = general.get("homeTeam") or {}
+    away_from_details = general.get("awayTeam") or {}
+    home_from_match = match.get("home") or {}
+    away_from_match = match.get("away") or {}
 
-    if team_id is not None:
-        if home_id is not None and team_id == home_id:
-            return "Home"
-        if away_id is not None and team_id == away_id:
-            return "Away"
+    def _safe_int(value: Any) -> int | None:
+        try:
+            return int(value) if value is not None else None
+        except (TypeError, ValueError):
+            return None
 
-    side = str(event.get("side") or event.get("team") or event.get("homeAway") or "").lower()
-    if side.startswith("home"):
-        return "Home"
-    if side.startswith("away"):
-        return "Away"
-    return "Unknown"
+    home_name = str(home_from_details.get("name") or home_from_match.get("name") or "Home")
+    away_name = str(away_from_details.get("name") or away_from_match.get("name") or "Away")
+
+    return {
+        "home_team_id": _safe_int(home_from_details.get("id") or home_from_match.get("id")),
+        "away_team_id": _safe_int(away_from_details.get("id") or away_from_match.get("id")),
+        "home_team_name": home_name,
+        "away_team_name": away_name,
+    }
 
 
 def _extract_event_type(event: dict[str, Any]) -> str:
@@ -409,16 +418,31 @@ def _extract_event_type(event: dict[str, Any]) -> str:
     ).lower()
 
 
+def _is_goal_event_type(event_type: str) -> bool:
+    if "goal" not in event_type:
+        return False
+    excluded = {"period", "half", "full", "ht", "ft", "start", "end"}
+    return not any(token in event_type for token in excluded)
+
+
 def _extract_minute_parts(event: dict[str, Any]) -> tuple[int, int, str]:
     minute = event.get("min")
     if minute is None:
         minute = event.get("minute")
-    if minute is None:
-        minute = event.get("time")
+
+    time_field = event.get("time")
+    if minute is None and isinstance(time_field, dict):
+        minute = time_field.get("normal") or time_field.get("minute")
+    elif minute is None and time_field is not None:
+        minute = time_field
 
     added = event.get("minAdded")
     if added is None:
         added = event.get("addedTime")
+    if added is None:
+        added = event.get("injuryTime")
+    if added is None and isinstance(time_field, dict):
+        added = time_field.get("added")
 
     try:
         minute_base = int(minute)
@@ -439,26 +463,18 @@ def _extract_minute_parts(event: dict[str, Any]) -> tuple[int, int, str]:
     return minute_base, minute_added, minute_text
 
 
-def _extract_player_name(event: dict[str, Any]) -> str:
+def _extract_player_name(event: dict[str, Any]) -> str | None:
     if event.get("playerName"):
         return str(event["playerName"])
+    player = event.get("player")
+    if isinstance(player, dict):
+        if player.get("name"):
+            return str(player["name"])
+        if player.get("shortName"):
+            return str(player["shortName"])
     if event.get("name"):
         return str(event["name"])
-    if isinstance(event.get("player"), dict) and event["player"].get("name"):
-        return str(event["player"]["name"])
-    if isinstance(event.get("participant"), dict) and event["participant"].get("name"):
-        return str(event["participant"]["name"])
-    return "Unknown scorer"
-
-
-def _is_goal_like_event(event: dict[str, Any]) -> bool:
-    event_type = _extract_event_type(event)
-    if "goal" in event_type:
-        return True
-
-    has_player = bool(event.get("playerName") or event.get("name") or isinstance(event.get("player"), dict))
-    has_time = any(event.get(k) is not None for k in ("min", "minute", "time"))
-    return has_player and has_time
+    return None
 
 
 def _extract_event_list_at_path(payload: dict[str, Any], path: tuple[str, ...]) -> list[dict[str, Any]]:
@@ -510,7 +526,38 @@ def log_match_details_presence(details: dict[str, Any]) -> None:
     )
 
 
-def extract_goals(match_details: dict[str, Any]) -> list[dict[str, Any]]:
+def _infer_team_label(event: dict[str, Any], context: dict[str, Any]) -> str:
+    is_home = event.get("isHome")
+    if isinstance(is_home, bool):
+        return context["home_team_name"] if is_home else context["away_team_name"]
+
+    team_id = event.get("teamId")
+    if team_id is None and isinstance(event.get("team"), dict):
+        team_id = event["team"].get("id")
+    try:
+        team_id_int = int(team_id) if team_id is not None else None
+    except (TypeError, ValueError):
+        team_id_int = None
+
+    if team_id_int is not None:
+        if context.get("home_team_id") is not None and team_id_int == context.get("home_team_id"):
+            return context["home_team_name"]
+        if context.get("away_team_id") is not None and team_id_int == context.get("away_team_id"):
+            return context["away_team_name"]
+
+    team_name = _team_name_from_event(event)
+    if team_name:
+        lower = team_name.lower()
+        if lower == str(context["home_team_name"]).lower():
+            return context["home_team_name"]
+        if lower == str(context["away_team_name"]).lower():
+            return context["away_team_name"]
+        return team_name
+
+    return ""
+
+
+def extract_goals(match_details: dict[str, Any], match_context: dict[str, Any], match_id: str) -> list[dict[str, Any]]:
     """Extract recap goals from matchDetails using shotmap then fallback event sections."""
     candidates = _collect_goal_event_candidates(match_details)
 
@@ -529,19 +576,43 @@ def extract_goals(match_details: dict[str, Any]) -> list[dict[str, Any]]:
             source_events = events
             break
 
+    dedupe_keys: set[str] = set()
+    content_keys: set[str] = set()
     goals: list[tuple[tuple[int, int], dict[str, Any]]] = []
     for event in source_events:
-        if not _is_goal_like_event(event):
+        event_type = _extract_event_type(event)
+        if not _is_goal_event_type(event_type):
+            continue
+
+        player_name = _extract_player_name(event)
+        if not player_name:
             continue
 
         minute_base, minute_added, minute_text = _extract_minute_parts(event)
+
+        incident_id = event.get("incidentId") or event.get("id")
+        if incident_id is not None:
+            unique = f"incident:{incident_id}"
+        else:
+            team_label = _infer_team_label(event, match_context)
+            team_id = event.get("teamId")
+            unique = f"fallback:{match_id}:{minute_text}:{team_id}:{team_label}:{player_name}"
+
+        team_label = _infer_team_label(event, match_context)
+        content_key = f"{minute_text}:{team_label}:{player_name}"
+
+        if unique in dedupe_keys or content_key in content_keys:
+            continue
+        dedupe_keys.add(unique)
+        content_keys.add(content_key)
+
         goals.append(
             (
                 (minute_base, minute_added),
                 {
                     "minute_str": minute_text,
-                    "player_name": _extract_player_name(event),
-                    "is_home": _goal_side_label_for_recap(event, match_details) == "Home",
+                    "player_name": player_name,
+                    "team_label": team_label,
                     "is_penalty": bool(event.get("isPenalty") or event.get("penalty")),
                     "is_own_goal": bool(event.get("isOwnGoal") or event.get("ownGoal")),
                 },
@@ -552,15 +623,15 @@ def extract_goals(match_details: dict[str, Any]) -> list[dict[str, Any]]:
     return [goal for _, goal in goals]
 
 
-def parse_recap_goals(details: dict[str, Any]) -> list[dict[str, str]]:
-    goals = extract_goals(details)
+def parse_recap_goals(details: dict[str, Any], match_context: dict[str, Any], match_id: str) -> list[dict[str, str]]:
+    goals = extract_goals(details, match_context, match_id)
     parsed: list[dict[str, str]] = []
     for goal in goals:
         parsed.append(
             {
                 "minute": str(goal["minute_str"]),
                 "player": str(goal["player_name"]),
-                "side": "Home" if goal["is_home"] else "Away",
+                "team_label": str(goal.get("team_label") or ""),
                 "own_goal": "true" if goal["is_own_goal"] else "false",
                 "is_penalty": "true" if goal["is_penalty"] else "false",
             }
@@ -588,8 +659,9 @@ def build_recap_competition_line(match: dict[str, Any], details: dict[str, Any])
 
 
 def build_finished_match_recap_message(match: dict[str, Any], details: dict[str, Any], team_id: int) -> str:
-    home_name = str((match.get("home") or {}).get("name") or (details.get("general") or {}).get("homeTeam", {}).get("name") or "Home")
-    away_name = str((match.get("away") or {}).get("name") or (details.get("general") or {}).get("awayTeam", {}).get("name") or "Away")
+    context = get_recap_team_context(match, details)
+    home_name = context["home_team_name"]
+    away_name = context["away_team_name"]
     kickoff_dt = parse_match_utc(match)
     kickoff_london = kickoff_dt.astimezone(LONDON_TZ).strftime("%d-%m-%Y %H:%M")
     scoreline = _extract_scoreline_from_details(details, match)
@@ -607,7 +679,7 @@ def build_finished_match_recap_message(match: dict[str, Any], details: dict[str,
     if stadium:
         lines.append(f"🏟️ {stadium}")
 
-    goals = parse_recap_goals(details)
+    goals = parse_recap_goals(details, context, str(match.get("id") or ""))
     if goals:
         lines.append("⚽ Goals:")
         for goal in goals:
@@ -617,7 +689,8 @@ def build_finished_match_recap_message(match: dict[str, Any], details: dict[str,
             if goal.get("own_goal") == "true":
                 extras.append("OG")
             suffix = f" ({', '.join(extras)})" if extras else ""
-            lines.append(f"- {goal['minute']}' {goal['player']}{suffix} ({goal['side']})")
+            team_label = f" ({goal['team_label']})" if goal.get("team_label") else ""
+            lines.append(f"- {goal['minute']}' {goal['player']}{suffix}{team_label}")
     else:
         lines.append("⚽ Goals: N/A (source did not provide goal events)")
 
@@ -860,7 +933,7 @@ def run() -> int:
 
         if debug_fotmob_payload:
             log_match_details_presence(details)
-            recap_goals = extract_goals(details)
+            recap_goals = extract_goals(details, get_recap_team_context(latest_match, details), str(match_id))
             print(f"Recap debug: goals_parsed={len(recap_goals)}")
 
         recap_event_id = f"recap:{match_id}"
