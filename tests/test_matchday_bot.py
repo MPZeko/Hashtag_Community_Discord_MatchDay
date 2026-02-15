@@ -389,6 +389,28 @@ class TestMatchDayBot(unittest.TestCase):
         os.environ.pop("DISCORD_WEBHOOK_URL", None)
         os.environ.pop("SEND_LATEST_FINISHED_MATCH_NOW", None)
 
+    def test_force_post_enables_recap_mode_implicitly(self):
+        os.environ["DRY_RUN"] = "true"
+        os.environ["FORCE_POST"] = "true"
+        os.environ.pop("SEND_LATEST_FINISHED_MATCH_NOW", None)
+
+        match = _base_match(
+            status_overrides={"started": True, "finished": True, "reason": {"short": "FT"}},
+            minutes_from_now=-60,
+            match_id=7878,
+        )
+
+        with patch.object(matchday_bot, "fetch_team_fixtures", return_value=_fixture(match)),              patch.object(matchday_bot, "fetch_match_details", return_value=_match_details(match_id=7878)) as mock_details,              patch("builtins.print") as mock_print:
+            code = matchday_bot.run()
+
+        self.assertEqual(code, 0)
+        mock_details.assert_called_once_with("7878")
+        joined = " ".join(str(call.args[0]) for call in mock_print.call_args_list if call.args)
+        self.assertIn("FORCE_POST enabled -> enabling recap mode.", joined)
+
+        os.environ.pop("DRY_RUN", None)
+        os.environ.pop("FORCE_POST", None)
+
     def test_run_latest_finished_recap_force_post_bypasses_dedupe(self):
         os.environ["DRY_RUN"] = "false"
         os.environ["DISCORD_WEBHOOK_URL"] = "https://discord.com/api/webhooks/test"

@@ -717,6 +717,9 @@ def run() -> int:
     send_next_match_now = env_as_bool("SEND_NEXT_MATCH_NOW", default=False)
     send_latest_finished_match_now = env_as_bool("SEND_LATEST_FINISHED_MATCH_NOW", default=False)
     force_post = env_as_bool("FORCE_POST", default=False)
+    if force_post and not send_latest_finished_match_now:
+        send_latest_finished_match_now = True
+        print("FORCE_POST enabled -> enabling recap mode.")
     max_finished_age_hours = int(get_env("MAX_FINISHED_AGE_HOURS", "168"))
     debug_fotmob_payload = env_as_bool("DEBUG_FOTMOB_PAYLOAD", default=False)
     fast_window_before_minutes = int(get_env("FAST_WINDOW_BEFORE_MINUTES", "60"))
