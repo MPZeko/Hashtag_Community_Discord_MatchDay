@@ -118,7 +118,7 @@ def fetch_match_details(match_id: str) -> dict[str, Any]:
         method="GET",
     )
 
-    debug = env_as_bool("DEBUG_FOTMOB_PAYLOAD", default=False)
+    debug = env_as_bool("DEBUG_FOTMOB_PAYLOAD", default=True)
 
     try:
         with urlopen(req, timeout=10) as response:
