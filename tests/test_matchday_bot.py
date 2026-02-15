@@ -507,7 +507,7 @@ class TestMatchDayBot(unittest.TestCase):
         self.assertNotIn("Unknown scorer", message)
         self.assertIn("22' Real Scorer", message)
 
-    def test_merge_sources_prefers_richer_goal_data(self):
+    def test_merge_prefers_richer_event_over_shotmap(self):
         details = {
             "general": {
                 "homeTeam": {"id": 1186081, "name": "Hashtag United"},
@@ -516,19 +516,35 @@ class TestMatchDayBot(unittest.TestCase):
             "content": {
                 "shotmap": {
                     "shots": [
-                        {"id": "g1", "eventType": "Goal", "minute": 45, "playerName": "Evans Kouassi", "teamId": 1186081}
+                        {"eventType": "Goal", "minute": 45, "playerName": "Evans Kouassi", "teamId": 1186081}
                     ]
                 },
-                "matchFacts": {
-                    "events": [
-                        {"id": "g1", "eventType": "PenaltyGoal", "minute": 45, "addedTime": 4, "playerName": "Evans Kouassi", "teamId": 1186081, "isPenalty": True}
-                    ]
-                },
+                "events": [
+                    {"type": "PenaltyGoal", "minute": 45, "addedTime": 4, "playerName": "Evans Kouassi", "teamId": 1186081, "homeScore": 1, "awayScore": 0}
+                ],
             },
         }
         match = _base_match(match_id=9292)
         message = build_finished_match_recap_message(match, details, 1186081)
         self.assertIn("45+4' Evans Kouassi (Pen.)", message)
+        self.assertEqual(message.count("45+4' Evans Kouassi"), 1)
+
+    def test_penalty_detected_from_event_type(self):
+        match = _base_match(match_id=9494)
+        details = {
+            "general": {
+                "homeTeam": {"id": 1186081, "name": "Hashtag United", "score": 1},
+                "awayTeam": {"id": 2211, "name": "Carshalton Athletic", "score": 0},
+                "status": {"scoreStr": "1 - 0"},
+            },
+            "content": {
+                "events": [
+                    {"type": "PenaltyGoal", "minute": 55, "addedTime": 4, "playerName": "Evans Kouassi", "teamId": 1186081}
+                ]
+            },
+        }
+        message = build_finished_match_recap_message(match, details, 1186081)
+        self.assertIn("55+4' Evans Kouassi (Pen.) (Hashtag United)", message)
 
     def test_team_label_correct_for_both_teams(self):
         details = {

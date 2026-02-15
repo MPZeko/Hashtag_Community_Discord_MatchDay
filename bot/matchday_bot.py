@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -118,7 +119,7 @@ def fetch_match_details(match_id: str) -> dict[str, Any]:
         method="GET",
     )
 
-    debug = env_as_bool("DEBUG_FOTMOB_PAYLOAD", default=True)
+    debug = env_as_bool("DEBUG_FOTMOB_PAYLOAD", default=False)
 
     try:
         with urlopen(req, timeout=10) as response:
@@ -491,11 +492,11 @@ def _extract_event_list_at_path(payload: dict[str, Any], path: tuple[str, ...]) 
 def _collect_goal_event_candidates(details: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
     candidates: dict[str, list[dict[str, Any]]] = {}
     paths = [
-        ("content", "shotmap", "shots"),
+        ("content", "events"),
         ("content", "matchFacts", "events"),
         ("content", "matchFacts", "events", "events"),
-        ("content", "events"),
         ("content", "incidents"),
+        ("content", "shotmap", "shots"),
     ]
     for path in paths:
         events = _extract_event_list_at_path(details, path)
@@ -558,7 +559,167 @@ def _infer_team_label(event: dict[str, Any], context: dict[str, Any]) -> str:
     return ""
 
 
-def _is_unknown_player_name(name: str) -> bool:
+def _is_unknown_name(name: str) -> bool:
+    normalized = (name or "").strip().lower()
+    if normalized in {"", "unknown scorer", "unknown", "n/a"}:
+        return True
+    return "unknown" in normalized.split()
+
+
+def _parse_minute_string(raw: str) -> tuple[int, int] | None:
+    text = (raw or "").strip().replace("'", "")
+    match = re.match(r"^(\d+)(?:\+(\d+))?$", text)
+    if not match:
+        return None
+    base = int(match.group(1))
+    added = int(match.group(2) or 0)
+    return base, added
+
+
+def _extract_minute_parts(event: dict[str, Any]) -> tuple[int, int, str]:
+    minute = event.get("min")
+    if minute is None:
+        minute = event.get("minute")
+
+    time_field = event.get("time")
+    if minute is None and isinstance(time_field, dict):
+        minute = time_field.get("normal") or time_field.get("minute")
+    elif minute is None and time_field is not None and not isinstance(time_field, dict):
+        minute = time_field
+
+    added = event.get("minAdded")
+    if added is None:
+        added = event.get("addedTime")
+    if added is None:
+        added = event.get("injuryTime")
+    if added is None and isinstance(time_field, dict):
+        added = time_field.get("added")
+
+    for field in (event.get("timeStr"), event.get("minuteStr"), event.get("displayTime")):
+        if isinstance(field, str):
+            parsed = _parse_minute_string(field)
+            if parsed:
+                minute, parsed_added = parsed
+                if added in (None, "", 0, "0"):
+                    added = parsed_added
+                break
+
+    if isinstance(minute, str):
+        parsed = _parse_minute_string(minute)
+        if parsed:
+            minute, parsed_added = parsed
+            if added in (None, "", 0, "0"):
+                added = parsed_added
+
+    try:
+        minute_base = int(minute)
+    except (TypeError, ValueError):
+        minute_base = 0
+    try:
+        minute_added = int(added or 0)
+    except (TypeError, ValueError):
+        minute_added = 0
+
+    minute_text = f"{minute_base}+{minute_added}" if minute_added > 0 else str(minute_base)
+    return minute_base, minute_added, minute_text
+
+
+def _extract_player_name(event: dict[str, Any]) -> str | None:
+    if event.get("playerName"):
+        return str(event["playerName"])
+    player = event.get("player")
+    if isinstance(player, dict):
+        if player.get("name"):
+            return str(player["name"])
+        if player.get("shortName"):
+            return str(player["shortName"])
+    if event.get("name"):
+        return str(event["name"])
+    return None
+
+
+def _extract_event_list_at_path(payload: dict[str, Any], path: tuple[str, ...]) -> list[dict[str, Any]]:
+    node: Any = payload
+    for key in path:
+        if not isinstance(node, dict):
+            return []
+        node = node.get(key)
+    if isinstance(node, list):
+        return [x for x in node if isinstance(x, dict)]
+    return []
+
+
+def _collect_goal_event_candidates(details: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+    candidates: dict[str, list[dict[str, Any]]] = {}
+    paths = [
+        ("content", "events"),
+        ("content", "matchFacts", "events"),
+        ("content", "matchFacts", "events", "events"),
+        ("content", "incidents"),
+        ("content", "shotmap", "shots"),
+    ]
+    for path in paths:
+        events = _extract_event_list_at_path(details, path)
+        if events:
+            candidates[".".join(path)] = events
+    return candidates
+
+
+def log_match_details_presence(details: dict[str, Any]) -> None:
+    top_keys = sorted(details.keys()) if isinstance(details, dict) else []
+    content = details.get("content") if isinstance(details, dict) else None
+    content_keys = sorted(content.keys()) if isinstance(content, dict) else []
+
+    shotmap = (content.get("shotmap") if isinstance(content, dict) else {}) or {}
+    shots = shotmap.get("shots") if isinstance(shotmap, dict) else []
+    shot_count = len(shots) if isinstance(shots, list) else 0
+
+    candidates = _collect_goal_event_candidates(details)
+    event_counts = {name: len(items) for name, items in candidates.items() if name != "content.shotmap.shots"}
+    has_any_events_section = bool(event_counts)
+
+    print(f"Recap payload presence: top_level_keys={top_keys}")
+    print(f"Recap payload presence: content_keys={content_keys}")
+    print(
+        "Recap payload presence: "
+        f"has_shotmap={shot_count > 0}, shot_count={shot_count}, "
+        f"has_any_events_section={has_any_events_section}, event_counts={event_counts}"
+    )
+
+
+def _infer_team_label(event: dict[str, Any], context: dict[str, Any]) -> str:
+    team_id = event.get("teamId")
+    if team_id is None and isinstance(event.get("team"), dict):
+        team_id = event["team"].get("id")
+    try:
+        team_id_int = int(team_id) if team_id is not None else None
+    except (TypeError, ValueError):
+        team_id_int = None
+
+    # teamId is source of truth when present.
+    if team_id_int is not None:
+        if context.get("home_team_id") is not None and team_id_int == context.get("home_team_id"):
+            return context["home_team_name"]
+        if context.get("away_team_id") is not None and team_id_int == context.get("away_team_id"):
+            return context["away_team_name"]
+
+    is_home = event.get("isHome")
+    if isinstance(is_home, bool):
+        return context["home_team_name"] if is_home else context["away_team_name"]
+
+    team_name = _team_name_from_event(event)
+    if team_name:
+        lower = team_name.lower()
+        if lower == str(context["home_team_name"]).lower():
+            return context["home_team_name"]
+        if lower == str(context["away_team_name"]).lower():
+            return context["away_team_name"]
+        return team_name
+
+    return ""
+
+
+def _is_unknown_name(name: str) -> bool:
     normalized = (name or "").strip().lower()
     if normalized in {"", "unknown scorer", "unknown", "n/a"}:
         return True
@@ -644,22 +805,33 @@ def _is_penalty_event(event: dict[str, Any]) -> bool:
     if bool(event.get("isPenalty") or event.get("penalty")):
         return True
     event_type = _extract_event_type(event)
-    return "pen" in event_type or "penalty" in event_type
+    subtype = str(event.get("subtype") or "").lower()
+    incident_type = str(event.get("incidentType") or "").lower()
+    return "pen" in event_type or "pen" in subtype or "pen" in incident_type
 
 
 def _is_own_goal_event(event: dict[str, Any]) -> bool:
     if bool(event.get("isOwnGoal") or event.get("ownGoal")):
         return True
     event_type = _extract_event_type(event)
-    return "own" in event_type
+    subtype = str(event.get("subtype") or "").lower()
+    return "own" in event_type or "own" in subtype
 
 
-def _event_score_signature(event: dict[str, Any]) -> str:
+def _event_score_signature(event: dict[str, Any]) -> str | None:
     home_score = event.get("homeScore")
     away_score = event.get("awayScore")
-    if home_score is None and away_score is None and isinstance(event.get("score"), str):
+    if home_score is not None or away_score is not None:
+        return f"{home_score}-{away_score}"
+    if isinstance(event.get("scoreStr"), str):
+        return str(event["scoreStr"])
+    if isinstance(event.get("score"), str):
         return str(event["score"])
-    return f"{home_score}-{away_score}"
+    return None
+
+
+def _normalize_player_name(name: str) -> str:
+    return " ".join((name or "").strip().lower().split())
 
 
 def _goal_quality(goal: dict[str, Any]) -> int:
@@ -690,7 +862,7 @@ def extract_goals(match_details: dict[str, Any], match_context: dict[str, Any], 
                 continue
 
             player_name = _extract_player_name(event)
-            if not player_name or _is_unknown_player_name(player_name):
+            if not player_name or _is_unknown_name(player_name):
                 continue
 
             minute_base, minute_added, minute_text = _extract_minute_parts(event)
@@ -703,9 +875,11 @@ def extract_goals(match_details: dict[str, Any], match_context: dict[str, Any], 
             if incident_id is not None:
                 key = f"incident:{incident_id}"
             else:
+                score_sig = _event_score_signature(event)
+                canonical_team = str(team_id) if team_id is not None else team_label
                 key = (
-                    f"fallback:{match_id}:{minute_base}:{minute_added}:{team_id}:"
-                    f"{player_name}:{_event_score_signature(event)}"
+                    f"fallback:{match_id}:{canonical_team}:{minute_base}:"
+                    f"{_normalize_player_name(player_name)}:{score_sig}"
                 )
 
             goal_candidates += 1
