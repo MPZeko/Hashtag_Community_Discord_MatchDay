@@ -107,7 +107,46 @@ def fetch_team_fixtures(team_id: int) -> dict[str, Any]:
 
 
 def fetch_match_details(match_id: str) -> dict[str, Any]:
-    return _request_json(FOTMOB_MATCH_DETAILS_URL, params={"matchId": match_id})
+    params = {"matchId": match_id}
+    full_url = f"{FOTMOB_MATCH_DETAILS_URL}?{urlencode(params)}"
+    req = Request(
+        full_url,
+        headers={
+            "User-Agent": "Mozilla/5.0",
+            "Accept": "application/json,text/plain,*/*",
+        },
+        method="GET",
+    )
+
+    debug = env_as_bool("DEBUG_FOTMOB_PAYLOAD", default=False)
+
+    try:
+        with urlopen(req, timeout=10) as response:
+            status_code = getattr(response, "status", None) or response.getcode()
+            content_type = response.headers.get("Content-Type", "")
+            raw = response.read()
+            decoded = raw.decode("utf-8", errors="replace") if raw else ""
+
+            try:
+                parsed = json.loads(decoded) if decoded.strip() else {}
+                json_ok = True
+            except json.JSONDecodeError:
+                parsed = {}
+                json_ok = False
+
+            if debug:
+                print(
+                    "matchDetails fetch debug: "
+                    f"status_code={status_code}, "
+                    f"content_type={content_type}, "
+                    f"json_parse_ok={json_ok}"
+                )
+                if not json_ok:
+                    print(f"matchDetails non-JSON preview: {decoded[:200]}")
+
+            return parsed
+    except (HTTPError, URLError) as exc:
+        raise RuntimeError(f"HTTP request failed: {exc}") from exc
 
 
 def _pick_match_obj(item: dict[str, Any]) -> dict[str, Any] | None:
@@ -339,6 +378,8 @@ def find_latest_finished_match(
 def _goal_side_label_for_recap(event: dict[str, Any], details: dict[str, Any]) -> str:
     """Return Home/Away label for recap goal lines."""
     team_id = event.get("teamId")
+    if team_id is None and isinstance(event.get("team"), dict):
+        team_id = event["team"].get("id")
     general = details.get("general") or {}
     home_id = (general.get("homeTeam") or {}).get("id")
     away_id = (general.get("awayTeam") or {}).get("id")
@@ -405,68 +446,126 @@ def _extract_player_name(event: dict[str, Any]) -> str:
         return str(event["name"])
     if isinstance(event.get("player"), dict) and event["player"].get("name"):
         return str(event["player"]["name"])
+    if isinstance(event.get("participant"), dict) and event["participant"].get("name"):
+        return str(event["participant"]["name"])
     return "Unknown scorer"
 
 
-def _find_fallback_goal_events(details: dict[str, Any]) -> tuple[list[dict[str, Any]], str]:
-    content = details.get("content") or {}
+def _is_goal_like_event(event: dict[str, Any]) -> bool:
+    event_type = _extract_event_type(event)
+    if "goal" in event_type:
+        return True
 
-    match_facts = content.get("matchFacts") or details.get("matchFacts") or {}
-    facts_events = match_facts.get("events")
-    if isinstance(facts_events, list):
-        return facts_events, "matchFacts.events"
-
-    facts_incidents = match_facts.get("incidents")
-    if isinstance(facts_incidents, list):
-        return facts_incidents, "matchFacts.incidents"
-
-    incidents = content.get("incidents") or details.get("incidents")
-    if isinstance(incidents, list):
-        return incidents, "incidents"
-
-    events = content.get("events") or details.get("events")
-    if isinstance(events, list):
-        return events, "events"
-
-    return [], "none"
+    has_player = bool(event.get("playerName") or event.get("name") or isinstance(event.get("player"), dict))
+    has_time = any(event.get(k) is not None for k in ("min", "minute", "time"))
+    return has_player and has_time
 
 
-def parse_recap_goals(details: dict[str, Any]) -> list[dict[str, str]]:
-    shots = (((details.get("content") or {}).get("shotmap") or {}).get("shots") or [])
-    source_name = "content.shotmap.shots"
-    source_events: list[dict[str, Any]]
+def _extract_event_list_at_path(payload: dict[str, Any], path: tuple[str, ...]) -> list[dict[str, Any]]:
+    node: Any = payload
+    for key in path:
+        if not isinstance(node, dict):
+            return []
+        node = node.get(key)
+    if isinstance(node, list):
+        return [x for x in node if isinstance(x, dict)]
+    return []
 
-    if isinstance(shots, list) and shots:
-        source_events = [item for item in shots if isinstance(item, dict)]
-    else:
-        source_events, source_name = _find_fallback_goal_events(details)
-        source_events = [item for item in source_events if isinstance(item, dict)]
 
-    goals: list[tuple[tuple[int, int], dict[str, str]]] = []
+def _collect_goal_event_candidates(details: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+    candidates: dict[str, list[dict[str, Any]]] = {}
+    paths = [
+        ("content", "shotmap", "shots"),
+        ("content", "matchFacts", "events"),
+        ("content", "matchFacts", "events", "events"),
+        ("content", "events"),
+        ("content", "incidents"),
+    ]
+    for path in paths:
+        events = _extract_event_list_at_path(details, path)
+        if events:
+            candidates[".".join(path)] = events
+    return candidates
+
+
+def log_match_details_presence(details: dict[str, Any]) -> None:
+    top_keys = sorted(details.keys()) if isinstance(details, dict) else []
+    content = details.get("content") if isinstance(details, dict) else None
+    content_keys = sorted(content.keys()) if isinstance(content, dict) else []
+
+    shotmap = (content.get("shotmap") if isinstance(content, dict) else {}) or {}
+    shots = shotmap.get("shots") if isinstance(shotmap, dict) else []
+    shot_count = len(shots) if isinstance(shots, list) else 0
+
+    candidates = _collect_goal_event_candidates(details)
+    event_counts = {name: len(items) for name, items in candidates.items() if name != "content.shotmap.shots"}
+    has_any_events_section = bool(event_counts)
+
+    print(f"Recap payload presence: top_level_keys={top_keys}")
+    print(f"Recap payload presence: content_keys={content_keys}")
+    print(
+        "Recap payload presence: "
+        f"has_shotmap={shot_count > 0}, shot_count={shot_count}, "
+        f"has_any_events_section={has_any_events_section}, event_counts={event_counts}"
+    )
+
+
+def extract_goals(match_details: dict[str, Any]) -> list[dict[str, Any]]:
+    """Extract recap goals from matchDetails using shotmap then fallback event sections."""
+    candidates = _collect_goal_event_candidates(match_details)
+
+    ordered_sources = [
+        "content.shotmap.shots",
+        "content.matchFacts.events",
+        "content.matchFacts.events.events",
+        "content.events",
+        "content.incidents",
+    ]
+
+    source_events: list[dict[str, Any]] = []
+    for source in ordered_sources:
+        events = candidates.get(source, [])
+        if events:
+            source_events = events
+            break
+
+    goals: list[tuple[tuple[int, int], dict[str, Any]]] = []
     for event in source_events:
-        event_type = _extract_event_type(event)
-        if "goal" not in event_type:
+        if not _is_goal_like_event(event):
             continue
 
         minute_base, minute_added, minute_text = _extract_minute_parts(event)
-        player_name = _extract_player_name(event)
-        own_goal = bool(event.get("isOwnGoal") or event.get("ownGoal"))
-
         goals.append(
             (
                 (minute_base, minute_added),
                 {
-                    "minute": minute_text,
-                    "player": player_name,
-                    "side": _goal_side_label_for_recap(event, details),
-                    "own_goal": "true" if own_goal else "false",
-                    "source": source_name,
+                    "minute_str": minute_text,
+                    "player_name": _extract_player_name(event),
+                    "is_home": _goal_side_label_for_recap(event, match_details) == "Home",
+                    "is_penalty": bool(event.get("isPenalty") or event.get("penalty")),
+                    "is_own_goal": bool(event.get("isOwnGoal") or event.get("ownGoal")),
                 },
             )
         )
 
     goals.sort(key=lambda item: item[0])
-    return [g for _, g in goals]
+    return [goal for _, goal in goals]
+
+
+def parse_recap_goals(details: dict[str, Any]) -> list[dict[str, str]]:
+    goals = extract_goals(details)
+    parsed: list[dict[str, str]] = []
+    for goal in goals:
+        parsed.append(
+            {
+                "minute": str(goal["minute_str"]),
+                "player": str(goal["player_name"]),
+                "side": "Home" if goal["is_home"] else "Away",
+                "own_goal": "true" if goal["is_own_goal"] else "false",
+                "is_penalty": "true" if goal["is_penalty"] else "false",
+            }
+        )
+    return parsed
 
 
 def build_recap_competition_line(match: dict[str, Any], details: dict[str, Any]) -> str:
@@ -512,8 +611,13 @@ def build_finished_match_recap_message(match: dict[str, Any], details: dict[str,
     if goals:
         lines.append("⚽ Goals:")
         for goal in goals:
-            og_marker = " OG" if goal["own_goal"] == "true" else ""
-            lines.append(f"- {goal['minute']}' {goal['player']} ({goal['side']}){og_marker}")
+            extras: list[str] = []
+            if goal.get("is_penalty") == "true":
+                extras.append("Pen.")
+            if goal.get("own_goal") == "true":
+                extras.append("OG")
+            suffix = f" ({', '.join(extras)})" if extras else ""
+            lines.append(f"- {goal['minute']}' {goal['player']}{suffix} ({goal['side']})")
     else:
         lines.append("⚽ Goals: N/A (source did not provide goal events)")
 
@@ -755,18 +859,9 @@ def run() -> int:
         details = fetch_match_details(match_id)
 
         if debug_fotmob_payload:
-            content = details.get("content") or {}
-            match_facts = content.get("matchFacts") or details.get("matchFacts") or {}
-            recap_goals = parse_recap_goals(details)
-            print(
-                "Recap debug: "
-                f"shotmap_present={isinstance((content.get('shotmap') or {}).get('shots'), list)}, "
-                f"events_present={isinstance(content.get('events'), list) or isinstance(details.get('events'), list)}, "
-                f"matchfacts_events_present={isinstance(match_facts.get('events'), list)}, "
-                f"matchfacts_incidents_present={isinstance(match_facts.get('incidents'), list)}, "
-                f"incidents_present={isinstance(content.get('incidents'), list) or isinstance(details.get('incidents'), list)}, "
-                f"goals_parsed={len(recap_goals)}"
-            )
+            log_match_details_presence(details)
+            recap_goals = extract_goals(details)
+            print(f"Recap debug: goals_parsed={len(recap_goals)}")
 
         recap_event_id = f"recap:{match_id}"
         posted_event_ids = load_state()

@@ -17,10 +17,12 @@ from bot.matchday_bot import (
     env_as_bool,
     find_next_upcoming_match,
     find_latest_finished_match,
+    fetch_match_details,
     load_state,
     match_score,
     parse_goal_events,
     parse_recap_goals,
+    extract_goals,
     save_state,
     should_run_event_pipeline,
 )
@@ -86,6 +88,34 @@ def _match_details(match_id=999):
 class _DummyResponse:
     def __init__(self, payload: bytes):
         self.payload = payload
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def read(self):
+        return self.payload
+
+
+
+
+class _DummyHTTPResponse:
+    def __init__(self, payload: bytes, status: int = 200, content_type: str = "application/json"):
+        self.payload = payload
+        self.status = status
+        self._headers = {"Content-Type": content_type}
+
+    @property
+    def headers(self):
+        return self
+
+    def get(self, key, default=None):
+        return self._headers.get(key, default)
+
+    def getcode(self):
+        return self.status
 
     def __enter__(self):
         return self
@@ -323,6 +353,33 @@ class TestMatchDayBot(unittest.TestCase):
         self.assertIn("55+2' Player B (Away)", message)
         self.assertIn("🏆 League (Round 1)", message)
 
+    def test_extract_goals_from_shotmap_with_penalty_and_stoppage(self):
+        details = {
+            "general": {
+                "homeTeam": {"id": 1186081, "name": "Hashtag United"},
+                "awayTeam": {"id": 123, "name": "Opponent"},
+            },
+            "content": {
+                "shotmap": {
+                    "shots": [
+                        {
+                            "eventType": "Goal",
+                            "min": 55,
+                            "minAdded": 4,
+                            "playerName": "Evans Kouassi",
+                            "teamId": 1186081,
+                            "isPenalty": True,
+                        }
+                    ]
+                }
+            },
+        }
+        goals = extract_goals(details)
+        self.assertEqual(len(goals), 1)
+        self.assertEqual(goals[0]["minute_str"], "55+4")
+        self.assertTrue(goals[0]["is_penalty"])
+        self.assertTrue(goals[0]["is_home"])
+
     def test_parse_recap_goals_fallback_to_matchfacts_events(self):
         details = {
             "general": {
@@ -342,6 +399,47 @@ class TestMatchDayBot(unittest.TestCase):
         self.assertEqual(goals[0]["minute"], "88")
         self.assertEqual(goals[0]["player"], "Late Winner")
         self.assertEqual(goals[0]["side"], "Home")
+
+    def test_parse_recap_goals_fallback_to_incidents_section(self):
+        details = {
+            "general": {
+                "homeTeam": {"id": 1186081, "name": "Hashtag United"},
+                "awayTeam": {"id": 123, "name": "Opponent"},
+            },
+            "content": {
+                "incidents": [
+                    {"type": "Goal", "minute": 42, "name": "Luke Read", "teamId": 123}
+                ]
+            },
+        }
+        goals = parse_recap_goals(details)
+        self.assertEqual(len(goals), 1)
+        self.assertEqual(goals[0]["minute"], "42")
+        self.assertEqual(goals[0]["player"], "Luke Read")
+        self.assertEqual(goals[0]["side"], "Away")
+
+    def test_build_finished_recap_renders_penalty_marker(self):
+        match = _base_match(
+            status_overrides={"started": True, "finished": True, "reason": {"short": "FT"}},
+            minutes_from_now=-90,
+            match_id=4020,
+        )
+        details = {
+            "general": {
+                "homeTeam": {"id": 1186081, "name": "Hashtag United", "score": 1},
+                "awayTeam": {"id": 123, "name": "Opponent", "score": 0},
+                "status": {"scoreStr": "1 - 0"},
+            },
+            "content": {
+                "shotmap": {
+                    "shots": [
+                        {"eventType": "Goal", "min": 55, "minAdded": 4, "playerName": "Evans Kouassi", "teamId": 1186081, "isPenalty": True}
+                    ]
+                }
+            },
+        }
+        message = build_finished_match_recap_message(match, details, 1186081)
+        self.assertIn("55+4' Evans Kouassi (Pen.) (Home)", message)
 
     def test_build_finished_recap_includes_goals_na_when_missing(self):
         match = _base_match(
@@ -400,7 +498,9 @@ class TestMatchDayBot(unittest.TestCase):
             match_id=7878,
         )
 
-        with patch.object(matchday_bot, "fetch_team_fixtures", return_value=_fixture(match)),              patch.object(matchday_bot, "fetch_match_details", return_value=_match_details(match_id=7878)) as mock_details,              patch("builtins.print") as mock_print:
+        with patch.object(matchday_bot, "fetch_team_fixtures", return_value=_fixture(match)), \
+             patch.object(matchday_bot, "fetch_match_details", return_value=_match_details(match_id=7878)) as mock_details, \
+             patch("builtins.print") as mock_print:
             code = matchday_bot.run()
 
         self.assertEqual(code, 0)
@@ -450,7 +550,9 @@ class TestMatchDayBot(unittest.TestCase):
             match_id=6666,
         )
 
-        with patch.object(matchday_bot, "fetch_team_fixtures", return_value=_fixture(match)),              patch.object(matchday_bot, "fetch_match_details", return_value=_match_details(match_id=6666)),              patch("builtins.print") as mock_print:
+        with patch.object(matchday_bot, "fetch_team_fixtures", return_value=_fixture(match)), \
+             patch.object(matchday_bot, "fetch_match_details", return_value=_match_details(match_id=6666)), \
+             patch("builtins.print") as mock_print:
             code = matchday_bot.run()
 
         self.assertEqual(code, 0)
@@ -475,6 +577,24 @@ class TestMatchDayBot(unittest.TestCase):
 
         os.environ.pop("DRY_RUN", None)
         os.environ.pop("DISCORD_TEST_MESSAGE", None)
+
+    def test_fetch_match_details_debug_logs_non_json_preview(self):
+        os.environ["DEBUG_FOTMOB_PAYLOAD"] = "true"
+        response = _DummyHTTPResponse(b"<html>blocked</html>", status=200, content_type="text/html")
+
+        with patch("bot.matchday_bot.urlopen", return_value=response), \
+             patch("builtins.print") as mock_print:
+            data = fetch_match_details("12345")
+
+        self.assertEqual(data, {})
+        joined = " ".join(str(call.args[0]) for call in mock_print.call_args_list if call.args)
+        self.assertIn("matchDetails fetch debug:", joined)
+        self.assertIn("status_code=200", joined)
+        self.assertIn("content_type=text/html", joined)
+        self.assertIn("json_parse_ok=False", joined)
+        self.assertIn("matchDetails non-JSON preview:", joined)
+
+        os.environ.pop("DEBUG_FOTMOB_PAYLOAD", None)
 
     def test_request_json_handles_empty_response_body(self):
         with patch("bot.matchday_bot.urlopen", return_value=_DummyResponse(b"")):
