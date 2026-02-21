@@ -33,11 +33,25 @@ class GoalEvent:
     message: str
 
 
-def get_env(name: str, default: str | None = None) -> str:
-    value = os.getenv(name, default)
+def get_env(name: str, default: str | None = None) -> str | None:
+    """Return env var value, treating empty/whitespace as missing."""
+    value = os.getenv(name)
     if value is None:
-        raise RuntimeError(f"Missing required environment variable: {name}")
-    return value
+        return default
+    value = value.strip()
+    return value if value else default
+
+
+def get_env_int(name: str, default: int) -> int:
+    """Parse integer env var safely. Empty/invalid -> default."""
+    raw = get_env(name, None)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        print(f"[warn] Invalid int for {name}='{raw}', falling back to default={default}")
+        return default
 
 
 def env_as_bool(name: str, default: bool = False) -> bool:
@@ -1266,11 +1280,11 @@ def post_to_discord(webhook_url: str, message: str) -> None:
 def run() -> int:
     dry_run = env_as_bool("DRY_RUN", default=False)
     webhook_url = os.getenv("DISCORD_WEBHOOK_URL")
-    team_id = int(get_env("TEAM_ID", "1186081"))
-    prematch_window_minutes = int(get_env("PREMATCH_WINDOW_MINUTES", "120"))
-    match_lookahead_hours = int(get_env("MATCH_LOOKAHEAD_HOURS", "24"))
-    advance_notice_hours = int(get_env("ADVANCE_NOTICE_HOURS", str(match_lookahead_hours)))
-    advance_notice_window_minutes = int(get_env("ADVANCE_NOTICE_WINDOW_MINUTES", "120"))
+    team_id = get_env_int("TEAM_ID", 1186081)
+    prematch_window_minutes = get_env_int("PREMATCH_WINDOW_MINUTES", 120)
+    match_lookahead_hours = get_env_int("MATCH_LOOKAHEAD_HOURS", 24)
+    advance_notice_hours = get_env_int("ADVANCE_NOTICE_HOURS", match_lookahead_hours)
+    advance_notice_window_minutes = get_env_int("ADVANCE_NOTICE_WINDOW_MINUTES", 120)
     debug_decisions = env_as_bool("DEBUG_DECISIONS", default=False)
     send_next_match_now = env_as_bool("SEND_NEXT_MATCH_NOW", default=False)
     send_latest_finished_match_now = env_as_bool("SEND_LATEST_FINISHED_MATCH_NOW", default=False)
@@ -1278,12 +1292,12 @@ def run() -> int:
     if force_post and not send_latest_finished_match_now:
         send_latest_finished_match_now = True
         print("FORCE_POST enabled -> enabling recap mode.")
-    max_finished_age_hours = int(get_env("MAX_FINISHED_AGE_HOURS", "168"))
+    max_finished_age_hours = get_env_int("MAX_FINISHED_AGE_HOURS", 168)
     debug_fotmob_payload = env_as_bool("DEBUG_FOTMOB_PAYLOAD", default=False)
-    fast_window_before_minutes = int(get_env("FAST_WINDOW_BEFORE_MINUTES", "60"))
-    fast_window_after_minutes = int(get_env("FAST_WINDOW_AFTER_MINUTES", "30"))
-    expected_match_duration_minutes = int(get_env("EXPECTED_MATCH_DURATION_MINUTES", "120"))
-    slow_poll_interval_minutes = int(get_env("SLOW_POLL_INTERVAL_MINUTES", "30"))
+    fast_window_before_minutes = get_env_int("FAST_WINDOW_BEFORE_MINUTES", 60)
+    fast_window_after_minutes = get_env_int("FAST_WINDOW_AFTER_MINUTES", 30)
+    expected_match_duration_minutes = get_env_int("EXPECTED_MATCH_DURATION_MINUTES", 120)
+    slow_poll_interval_minutes = get_env_int("SLOW_POLL_INTERVAL_MINUTES", 30)
     test_message = os.getenv("DISCORD_TEST_MESSAGE", "").strip()
 
     if not webhook_url and not dry_run:
