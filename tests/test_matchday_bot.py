@@ -161,6 +161,45 @@ class TestMatchDayBot(unittest.TestCase):
         events = build_events(fixtures, 1186081, prematch_window_minutes=120)
         self.assertTrue(any(event.event_id.endswith(":fulltime") for event in events))
 
+    def test_builds_daybefore_event_around_24h(self):
+        fixtures = _fixture(_base_match(minutes_from_now=24 * 60))
+        events = build_events(
+            fixtures,
+            1186081,
+            prematch_window_minutes=120,
+            match_lookahead_hours=24,
+            advance_notice_hours=24,
+            advance_notice_window_minutes=120,
+        )
+        daybefore = [event for event in events if event.event_id.endswith(":daybefore")]
+        self.assertEqual(len(daybefore), 1)
+        self.assertIn("#UPTHETAGS", daybefore[0].message)
+
+    def test_daybefore_not_triggered_close_to_kickoff(self):
+        fixtures = _fixture(_base_match(minutes_from_now=180))
+        events = build_events(
+            fixtures,
+            1186081,
+            prematch_window_minutes=240,
+            match_lookahead_hours=24,
+            advance_notice_hours=24,
+            advance_notice_window_minutes=120,
+        )
+        self.assertFalse(any(event.event_id.endswith(":daybefore") for event in events))
+        self.assertTrue(any(event.event_id.endswith(":prematch") for event in events))
+
+    def test_daybefore_not_triggered_far_from_24h_target(self):
+        fixtures = _fixture(_base_match(minutes_from_now=30 * 60))
+        events = build_events(
+            fixtures,
+            1186081,
+            prematch_window_minutes=120,
+            match_lookahead_hours=48,
+            advance_notice_hours=24,
+            advance_notice_window_minutes=120,
+        )
+        self.assertFalse(any(event.event_id.endswith(":daybefore") for event in events))
+
     def test_match_lookahead_hours_filters_future_matches(self):
         fixtures = _fixture(_base_match(minutes_from_now=36 * 60))
         events_24 = build_events(fixtures, 1186081, prematch_window_minutes=3000, match_lookahead_hours=24)

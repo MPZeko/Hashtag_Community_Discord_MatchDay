@@ -1072,16 +1072,28 @@ def should_run_event_pipeline(
     return (now.minute % slow_poll_interval_minutes) == 0
 
 
+def _format_time_until_kickoff(delta: timedelta) -> str:
+    total_minutes = max(0, int(delta.total_seconds() // 60))
+    hours, minutes = divmod(total_minutes, 60)
+    return f"{hours}h {minutes}m"
+
+
 def build_events(
     fixtures: dict[str, Any],
     team_id: int,
     prematch_window_minutes: int,
     match_lookahead_hours: int = 24,
+    advance_notice_hours: int | None = None,
+    advance_notice_window_minutes: int = 120,
+    debug_decisions: bool = False,
 ) -> list[MatchEvent]:
     now = datetime.now(timezone.utc)
     lower = now - timedelta(hours=4)
     upper = now + timedelta(hours=match_lookahead_hours)
     prematch_threshold = now + timedelta(minutes=prematch_window_minutes)
+    advance_hours = advance_notice_hours if advance_notice_hours is not None else match_lookahead_hours
+    advance_target = timedelta(hours=advance_hours)
+    advance_window = timedelta(minutes=max(1, advance_notice_window_minutes) / 2)
 
     events: list[MatchEvent] = []
     fixture_items = fixtures.get("fixtures", {}).get("allFixtures", {}).get("fixtures", [])
@@ -1098,9 +1110,13 @@ def build_events(
         try:
             match_time = parse_match_utc(match)
         except KeyError:
+            if debug_decisions:
+                print("Decision debug: skipped match without utcTime")
             continue
 
         if not (lower <= match_time <= upper):
+            if debug_decisions:
+                print(f"Decision debug: match outside lookahead window matchId={match.get('id')}")
             continue
 
         hashtag_name, opponent_name = team_display_name(match, team_id)
@@ -1114,6 +1130,15 @@ def build_events(
         competition_line = build_competition_line(match)
         stadium = match_stadium(match)
         stadium_line = f"🏟️ Stadium: {stadium}" if stadium else ""
+        time_to_kickoff = match_time - now
+
+        if debug_decisions:
+            print(
+                "Decision debug: "
+                f"matchId={match_id}, started={started}, finished={finished}, cancelled={cancelled}, "
+                f"time_to_kickoff_min={int(time_to_kickoff.total_seconds() // 60)}, "
+                f"advance_target_hours={advance_hours}, window_minutes={advance_notice_window_minutes}"
+            )
 
         if cancelled:
             lines = [
@@ -1123,6 +1148,31 @@ def build_events(
             if stadium_line:
                 lines.append(stadium_line)
             events.append(MatchEvent(f"{match_id}:cancelled", "\n".join(lines)))
+            continue
+
+        daybefore_condition = (
+            not started
+            and not finished
+            and not cancelled
+            and time_to_kickoff.total_seconds() > 0
+            and time_to_kickoff > timedelta(minutes=prematch_window_minutes)
+            and abs(time_to_kickoff - advance_target) <= advance_window
+        )
+        if daybefore_condition:
+            kickoff_london_dt = match_time.astimezone(LONDON_TZ)
+            kickoff_london = kickoff_london_dt.strftime("%d-%m-%Y %H:%M")
+            lines = [
+                f"🗓️ **Match in ~{advance_hours}h:** {hashtag_name} vs {opponent_name}",
+                f"🕒 Kickoff (London): {kickoff_london}",
+                f"⏳ Kickoff in {_format_time_until_kickoff(time_to_kickoff)}",
+                competition_line,
+            ]
+            if stadium_line:
+                lines.append(stadium_line)
+            lines.append("#UPTHETAGS")
+            events.append(MatchEvent(f"{match_id}:daybefore", "\n".join(lines)))
+            if debug_decisions:
+                print(f"Decision debug: daybefore_condition=true matchId={match_id}")
             continue
 
         if not started and match_time <= prematch_threshold:
@@ -1139,6 +1189,8 @@ def build_events(
             if stadium_line:
                 lines.append(stadium_line)
             events.append(MatchEvent(f"{match_id}:prematch", "\n".join(lines)))
+            if debug_decisions:
+                print(f"Decision debug: prematch_condition=true matchId={match_id}")
             continue
 
         if started and not finished:
@@ -1215,6 +1267,9 @@ def run() -> int:
     team_id = int(get_env("TEAM_ID", "1186081"))
     prematch_window_minutes = int(get_env("PREMATCH_WINDOW_MINUTES", "120"))
     match_lookahead_hours = int(get_env("MATCH_LOOKAHEAD_HOURS", "24"))
+    advance_notice_hours = int(get_env("ADVANCE_NOTICE_HOURS", str(match_lookahead_hours)))
+    advance_notice_window_minutes = int(get_env("ADVANCE_NOTICE_WINDOW_MINUTES", "120"))
+    debug_decisions = env_as_bool("DEBUG_DECISIONS", default=False)
     send_next_match_now = env_as_bool("SEND_NEXT_MATCH_NOW", default=False)
     send_latest_finished_match_now = env_as_bool("SEND_LATEST_FINISHED_MATCH_NOW", default=False)
     force_post = env_as_bool("FORCE_POST", default=False)
@@ -1301,10 +1356,21 @@ def run() -> int:
         expected_match_duration_minutes=expected_match_duration_minutes,
         slow_poll_interval_minutes=slow_poll_interval_minutes,
     ):
-        print("Skipping this 5-minute tick (outside fast window and not on slow interval boundary).")
+        print(
+            "Skipping this 5-minute tick (outside fast window and not on slow interval boundary). "
+            f"now_minute={datetime.now(timezone.utc).minute}, slow_poll_interval_minutes={slow_poll_interval_minutes}"
+        )
         return 0
 
-    events = build_events(fixtures, team_id, prematch_window_minutes, match_lookahead_hours)
+    events = build_events(
+        fixtures,
+        team_id,
+        prematch_window_minutes,
+        match_lookahead_hours,
+        advance_notice_hours=advance_notice_hours,
+        advance_notice_window_minutes=advance_notice_window_minutes,
+        debug_decisions=debug_decisions,
+    )
     goal_events = collect_live_goal_events(fixtures, team_id)
 
     posted_event_ids = load_state()
