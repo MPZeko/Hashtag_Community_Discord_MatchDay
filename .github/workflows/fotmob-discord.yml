@@ -209,9 +209,9 @@ jobs:
           FORCE_POST: ${{ github.event_name == 'workflow_dispatch' && inputs.force_post || 'false' }}
           MAX_FINISHED_AGE_HOURS: ${{ github.event_name == 'workflow_dispatch' && inputs.max_finished_age_hours || vars.MAX_FINISHED_AGE_HOURS || '168' }}
           DEBUG_FOTMOB_PAYLOAD: ${{ github.event_name == 'workflow_dispatch' && inputs.debug_fotmob_payload || 'false' }}
-          ADVANCE_NOTICE_HOURS: ${{ github.event_name == 'workflow_dispatch' && inputs.advance_notice_hours || vars.ADVANCE_NOTICE_HOURS || '' }}
-          ADVANCE_NOTICE_WINDOW_MINUTES: ${{ github.event_name == 'workflow_dispatch' && inputs.advance_notice_window_minutes || vars.ADVANCE_NOTICE_WINDOW_MINUTES || '' }}
-          DEBUG_DECISIONS: ${{ github.event_name == 'workflow_dispatch' && inputs.debug_decisions || 'false' }}
+          ADVANCE_NOTICE_HOURS: ${{ github.event_name == 'workflow_dispatch' && inputs.advance_notice_hours || vars.ADVANCE_NOTICE_HOURS || '24' }}
+          ADVANCE_NOTICE_WINDOW_MINUTES: ${{ github.event_name == 'workflow_dispatch' && inputs.advance_notice_window_minutes || vars.ADVANCE_NOTICE_WINDOW_MINUTES || '120' }}
+          DEBUG_DECISIONS: ${{ github.event_name == 'workflow_dispatch' && inputs.debug_decisions || vars.DEBUG_DECISIONS || 'false' }}
           DISCORD_TEST_MESSAGE: ${{ github.event_name == 'workflow_dispatch' && inputs.send_test_message && inputs.test_message || '' }}
         run: python bot/matchday_bot.py
 
