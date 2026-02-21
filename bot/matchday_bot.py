@@ -1089,11 +1089,13 @@ def build_events(
 ) -> list[MatchEvent]:
     now = datetime.now(timezone.utc)
     lower = now - timedelta(hours=4)
-    upper = now + timedelta(hours=match_lookahead_hours)
     prematch_threshold = now + timedelta(minutes=prematch_window_minutes)
     advance_hours = advance_notice_hours if advance_notice_hours is not None else match_lookahead_hours
     advance_target = timedelta(hours=advance_hours)
     advance_window = timedelta(minutes=max(1, advance_notice_window_minutes) / 2)
+    # Extend upper bound so fixtures slightly beyond MATCH_LOOKAHEAD_HOURS are still considered
+    # for day-before matching around (advance_notice_hours ± window).
+    upper = now + timedelta(hours=max(match_lookahead_hours, advance_hours)) + timedelta(minutes=advance_notice_window_minutes)
 
     events: list[MatchEvent] = []
     fixture_items = fixtures.get("fixtures", {}).get("allFixtures", {}).get("fixtures", [])

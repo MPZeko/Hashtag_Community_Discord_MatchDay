@@ -188,6 +188,30 @@ class TestMatchDayBot(unittest.TestCase):
         self.assertFalse(any(event.event_id.endswith(":daybefore") for event in events))
         self.assertTrue(any(event.event_id.endswith(":prematch") for event in events))
 
+    def test_daybefore_window_allows_kickoff_just_over_24h(self):
+        fixtures = _fixture(_base_match(minutes_from_now=24 * 60 + 30))
+        events = build_events(
+            fixtures,
+            1186081,
+            prematch_window_minutes=120,
+            match_lookahead_hours=24,
+            advance_notice_hours=24,
+            advance_notice_window_minutes=120,
+        )
+        self.assertTrue(any(event.event_id.endswith(":daybefore") for event in events))
+
+    def test_daybefore_window_upper_edge_25h(self):
+        fixtures = _fixture(_base_match(minutes_from_now=25 * 60))
+        events = build_events(
+            fixtures,
+            1186081,
+            prematch_window_minutes=120,
+            match_lookahead_hours=24,
+            advance_notice_hours=24,
+            advance_notice_window_minutes=120,
+        )
+        self.assertTrue(any(event.event_id.endswith(":daybefore") for event in events))
+
     def test_daybefore_not_triggered_far_from_24h_target(self):
         fixtures = _fixture(_base_match(minutes_from_now=30 * 60))
         events = build_events(

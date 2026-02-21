@@ -55,6 +55,19 @@ on:
         description: "Maximum age in hours for selecting latest finished match"
         required: false
         default: "168"
+      advance_notice_hours:
+        description: "Target hours before kickoff for day-before notice"
+        required: false
+        default: "24"
+      advance_notice_window_minutes:
+        description: "Window size in minutes for day-before matching"
+        required: false
+        default: "120"
+      debug_decisions:
+        description: "Print decision logs for fixture filtering and event selection"
+        required: false
+        type: boolean
+        default: false
 
 env:
   FAST_WINDOW_BEFORE_MINUTES: "60"
@@ -196,6 +209,9 @@ jobs:
           FORCE_POST: ${{ github.event_name == 'workflow_dispatch' && inputs.force_post || 'false' }}
           MAX_FINISHED_AGE_HOURS: ${{ github.event_name == 'workflow_dispatch' && inputs.max_finished_age_hours || vars.MAX_FINISHED_AGE_HOURS || '168' }}
           DEBUG_FOTMOB_PAYLOAD: ${{ github.event_name == 'workflow_dispatch' && inputs.debug_fotmob_payload || 'false' }}
+          ADVANCE_NOTICE_HOURS: ${{ github.event_name == 'workflow_dispatch' && inputs.advance_notice_hours || vars.ADVANCE_NOTICE_HOURS || '' }}
+          ADVANCE_NOTICE_WINDOW_MINUTES: ${{ github.event_name == 'workflow_dispatch' && inputs.advance_notice_window_minutes || vars.ADVANCE_NOTICE_WINDOW_MINUTES || '' }}
+          DEBUG_DECISIONS: ${{ github.event_name == 'workflow_dispatch' && inputs.debug_decisions || 'false' }}
           DISCORD_TEST_MESSAGE: ${{ github.event_name == 'workflow_dispatch' && inputs.send_test_message && inputs.test_message || '' }}
         run: python bot/matchday_bot.py
 
