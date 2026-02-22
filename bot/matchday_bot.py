@@ -19,6 +19,13 @@ FOTMOB_TEAM_FIXTURES_URL = "https://www.fotmob.com/api/teams"
 FOTMOB_MATCH_DETAILS_URL = "https://www.fotmob.com/api/matchDetails"
 STATE_FILE = Path(".state/posted_events.json")
 LONDON_TZ = ZoneInfo("Europe/London")
+DEFAULT_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
+    "Accept": "application/json,text/plain,*/*",
+    "Accept-Language": "en-GB,en;q=0.9,da;q=0.8",
+    "Referer": "https://www.fotmob.com/",
+    "Origin": "https://www.fotmob.com",
+}
 
 
 @dataclass(frozen=True)
@@ -87,17 +94,25 @@ def save_state(event_ids: set[str], path: Path = STATE_FILE) -> None:
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
-def _request_json(url: str, params: dict[str, Any] | None = None, body: dict[str, Any] | None = None) -> dict[str, Any]:
+def _request_json(
+    url: str,
+    params: dict[str, Any] | None = None,
+    body: dict[str, Any] | None = None,
+    headers: dict[str, str] | None = None,
+) -> dict[str, Any]:
     full_url = f"{url}?{urlencode(params)}" if params else url
     payload = None if body is None else json.dumps(body).encode("utf-8")
+
+    request_headers = {"User-Agent": DEFAULT_HEADERS["User-Agent"]}
+    if body is not None:
+        request_headers["Content-Type"] = "application/json"
+    if headers:
+        request_headers.update(headers)
 
     req = Request(
         full_url,
         data=payload,
-        headers={
-            "User-Agent": "Mozilla/5.0",
-            "Content-Type": "application/json",
-        },
+        headers=request_headers,
         method="POST" if body is not None else "GET",
     )
 
@@ -118,20 +133,14 @@ def fetch_team_fixtures(team_id: int) -> dict[str, Any]:
     return _request_json(
         FOTMOB_TEAM_FIXTURES_URL,
         params={"id": team_id, "timezone": "Europe/London", "ccode3": "GBR"},
+        headers=DEFAULT_HEADERS,
     )
 
 
-def fetch_match_details(match_id: str) -> dict[str, Any]:
+def fetch_match_details(match_id: str) -> dict[str, Any] | None:
     params = {"matchId": match_id}
     full_url = f"{FOTMOB_MATCH_DETAILS_URL}?{urlencode(params)}"
-    req = Request(
-        full_url,
-        headers={
-            "User-Agent": "Mozilla/5.0",
-            "Accept": "application/json,text/plain,*/*",
-        },
-        method="GET",
-    )
+    req = Request(full_url, headers=DEFAULT_HEADERS, method="GET")
 
     debug = env_as_bool("DEBUG_FOTMOB_PAYLOAD", default=False)
 
@@ -160,7 +169,17 @@ def fetch_match_details(match_id: str) -> dict[str, Any]:
                     print(f"matchDetails non-JSON preview: {decoded[:200]}")
 
             return parsed
-    except (HTTPError, URLError) as exc:
+    except HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace") if hasattr(exc, "read") else ""
+        snippet = body[:300].replace("\n", " ")
+        print(
+            f"[warn] matchDetails HTTP {exc.code} matchId={match_id} "
+            f'url={full_url} body="{snippet}"'
+        )
+        if exc.code == 403:
+            return None
+        raise RuntimeError(f"HTTP request failed: {exc}") from exc
+    except URLError as exc:
         raise RuntimeError(f"HTTP request failed: {exc}") from exc
 
 
@@ -1264,6 +1283,9 @@ def collect_live_goal_events(fixtures: dict[str, Any], team_id: int) -> list[Goa
 
         try:
             details = fetch_match_details(match_id)
+            if details is None:
+                print(f"[warn] matchDetails unavailable. Skipping live goal extraction for matchId={match_id}")
+                continue
             goals = parse_goal_events(match, details, team_id)
             goal_events.extend(goals)
             print(f"Live goal scan: matchId={match_id}, goals_found={len(goals)}")
@@ -1325,6 +1347,9 @@ def run() -> int:
             return 0
 
         details = fetch_match_details(match_id)
+        if details is None:
+            print(f"[warn] Recap unavailable (matchDetails blocked). Skipping recap for matchId={match_id}")
+            return 0
 
         if debug_fotmob_payload:
             log_match_details_presence(details)
