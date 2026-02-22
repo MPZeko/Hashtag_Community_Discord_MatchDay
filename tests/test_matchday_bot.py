@@ -1,3 +1,4 @@
+import io
 import json
 import os
 import tempfile
@@ -5,6 +6,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
+from urllib.error import HTTPError
 
 from bot import matchday_bot
 from bot.matchday_bot import (
@@ -780,6 +782,49 @@ class TestMatchDayBot(unittest.TestCase):
         self.assertIn("matchDetails non-JSON preview:", joined)
 
         os.environ.pop("DEBUG_FOTMOB_PAYLOAD", None)
+
+    def test_fetch_match_details_returns_none_on_403_and_logs_context(self):
+        err = HTTPError(
+            url="https://www.fotmob.com/api/matchDetails?matchId=12345",
+            code=403,
+            msg="Forbidden",
+            hdrs=None,
+            fp=io.BytesIO(b"<html>forbidden body</html>"),
+        )
+
+        with patch("bot.matchday_bot.urlopen", side_effect=err), \
+             patch("builtins.print") as mock_print:
+            data = fetch_match_details("12345")
+
+        self.assertIsNone(data)
+        joined = " ".join(str(call.args[0]) for call in mock_print.call_args_list if call.args)
+        self.assertIn("matchDetails HTTP 403", joined)
+        self.assertIn("matchId=12345", joined)
+        self.assertIn("url=https://www.fotmob.com/api/matchDetails?matchId=12345", joined)
+        self.assertIn("forbidden body", joined)
+
+    def test_run_force_post_recap_returns_zero_when_match_details_blocked(self):
+        match = _base_match(
+            status_overrides={"started": True, "finished": True, "reason": {"short": "FT"}},
+            minutes_from_now=-60,
+            match_id=7777,
+        )
+        os.environ["DRY_RUN"] = "true"
+        os.environ["FORCE_POST"] = "true"
+
+        with patch.object(matchday_bot, "fetch_team_fixtures", return_value=_fixture(match)), \
+             patch.object(matchday_bot, "fetch_match_details", return_value=None), \
+             patch("builtins.print") as mock_print:
+            code = matchday_bot.run()
+
+        self.assertEqual(code, 0)
+        joined = " ".join(str(call.args[0]) for call in mock_print.call_args_list if call.args)
+        self.assertIn("FORCE_POST enabled -> enabling recap mode.", joined)
+        self.assertIn("Recap unavailable (matchDetails blocked)", joined)
+
+        os.environ.pop("DRY_RUN", None)
+        os.environ.pop("FORCE_POST", None)
+
 
     def test_request_json_handles_empty_response_body(self):
         with patch("bot.matchday_bot.urlopen", return_value=_DummyResponse(b"")):

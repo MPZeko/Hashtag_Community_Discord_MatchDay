@@ -19,6 +19,13 @@ FOTMOB_TEAM_FIXTURES_URL = "https://www.fotmob.com/api/teams"
 FOTMOB_MATCH_DETAILS_URL = "https://www.fotmob.com/api/matchDetails"
 STATE_FILE = Path(".state/posted_events.json")
 LONDON_TZ = ZoneInfo("Europe/London")
+DEFAULT_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
+    "Accept": "application/json,text/plain,*/*",
+    "Accept-Language": "en-GB,en;q=0.9,da;q=0.8",
+    "Referer": "https://www.fotmob.com/",
+    "Origin": "https://www.fotmob.com",
+}
 
 
 @dataclass(frozen=True)
@@ -33,11 +40,25 @@ class GoalEvent:
     message: str
 
 
-def get_env(name: str, default: str | None = None) -> str:
-    value = os.getenv(name, default)
+def get_env(name: str, default: str | None = None) -> str | None:
+    """Return env var value, treating empty/whitespace as missing."""
+    value = os.getenv(name)
     if value is None:
-        raise RuntimeError(f"Missing required environment variable: {name}")
-    return value
+        return default
+    value = value.strip()
+    return value if value else default
+
+
+def get_env_int(name: str, default: int) -> int:
+    """Parse integer env var safely. Empty/invalid -> default."""
+    raw = get_env(name, None)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        print(f"[warn] Invalid int for {name}='{raw}', falling back to default={default}")
+        return default
 
 
 def env_as_bool(name: str, default: bool = False) -> bool:
@@ -73,17 +94,25 @@ def save_state(event_ids: set[str], path: Path = STATE_FILE) -> None:
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
-def _request_json(url: str, params: dict[str, Any] | None = None, body: dict[str, Any] | None = None) -> dict[str, Any]:
+def _request_json(
+    url: str,
+    params: dict[str, Any] | None = None,
+    body: dict[str, Any] | None = None,
+    headers: dict[str, str] | None = None,
+) -> dict[str, Any]:
     full_url = f"{url}?{urlencode(params)}" if params else url
     payload = None if body is None else json.dumps(body).encode("utf-8")
+
+    request_headers = {"User-Agent": DEFAULT_HEADERS["User-Agent"]}
+    if body is not None:
+        request_headers["Content-Type"] = "application/json"
+    if headers:
+        request_headers.update(headers)
 
     req = Request(
         full_url,
         data=payload,
-        headers={
-            "User-Agent": "Mozilla/5.0",
-            "Content-Type": "application/json",
-        },
+        headers=request_headers,
         method="POST" if body is not None else "GET",
     )
 
@@ -104,20 +133,14 @@ def fetch_team_fixtures(team_id: int) -> dict[str, Any]:
     return _request_json(
         FOTMOB_TEAM_FIXTURES_URL,
         params={"id": team_id, "timezone": "Europe/London", "ccode3": "GBR"},
+        headers=DEFAULT_HEADERS,
     )
 
 
-def fetch_match_details(match_id: str) -> dict[str, Any]:
+def fetch_match_details(match_id: str) -> dict[str, Any] | None:
     params = {"matchId": match_id}
     full_url = f"{FOTMOB_MATCH_DETAILS_URL}?{urlencode(params)}"
-    req = Request(
-        full_url,
-        headers={
-            "User-Agent": "Mozilla/5.0",
-            "Accept": "application/json,text/plain,*/*",
-        },
-        method="GET",
-    )
+    req = Request(full_url, headers=DEFAULT_HEADERS, method="GET")
 
     debug = env_as_bool("DEBUG_FOTMOB_PAYLOAD", default=False)
 
@@ -146,7 +169,17 @@ def fetch_match_details(match_id: str) -> dict[str, Any]:
                     print(f"matchDetails non-JSON preview: {decoded[:200]}")
 
             return parsed
-    except (HTTPError, URLError) as exc:
+    except HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace") if hasattr(exc, "read") else ""
+        snippet = body[:300].replace("\n", " ")
+        print(
+            f"[warn] matchDetails HTTP {exc.code} matchId={match_id} "
+            f'url={full_url} body="{snippet}"'
+        )
+        if exc.code == 403:
+            return None
+        raise RuntimeError(f"HTTP request failed: {exc}") from exc
+    except URLError as exc:
         raise RuntimeError(f"HTTP request failed: {exc}") from exc
 
 
@@ -1250,6 +1283,9 @@ def collect_live_goal_events(fixtures: dict[str, Any], team_id: int) -> list[Goa
 
         try:
             details = fetch_match_details(match_id)
+            if details is None:
+                print(f"[warn] matchDetails unavailable. Skipping live goal extraction for matchId={match_id}")
+                continue
             goals = parse_goal_events(match, details, team_id)
             goal_events.extend(goals)
             print(f"Live goal scan: matchId={match_id}, goals_found={len(goals)}")
@@ -1266,11 +1302,11 @@ def post_to_discord(webhook_url: str, message: str) -> None:
 def run() -> int:
     dry_run = env_as_bool("DRY_RUN", default=False)
     webhook_url = os.getenv("DISCORD_WEBHOOK_URL")
-    team_id = int(get_env("TEAM_ID", "1186081"))
-    prematch_window_minutes = int(get_env("PREMATCH_WINDOW_MINUTES", "120"))
-    match_lookahead_hours = int(get_env("MATCH_LOOKAHEAD_HOURS", "24"))
-    advance_notice_hours = int(get_env("ADVANCE_NOTICE_HOURS", str(match_lookahead_hours)))
-    advance_notice_window_minutes = int(get_env("ADVANCE_NOTICE_WINDOW_MINUTES", "120"))
+    team_id = get_env_int("TEAM_ID", 1186081)
+    prematch_window_minutes = get_env_int("PREMATCH_WINDOW_MINUTES", 120)
+    match_lookahead_hours = get_env_int("MATCH_LOOKAHEAD_HOURS", 24)
+    advance_notice_hours = get_env_int("ADVANCE_NOTICE_HOURS", match_lookahead_hours)
+    advance_notice_window_minutes = get_env_int("ADVANCE_NOTICE_WINDOW_MINUTES", 120)
     debug_decisions = env_as_bool("DEBUG_DECISIONS", default=False)
     send_next_match_now = env_as_bool("SEND_NEXT_MATCH_NOW", default=False)
     send_latest_finished_match_now = env_as_bool("SEND_LATEST_FINISHED_MATCH_NOW", default=False)
@@ -1278,12 +1314,12 @@ def run() -> int:
     if force_post and not send_latest_finished_match_now:
         send_latest_finished_match_now = True
         print("FORCE_POST enabled -> enabling recap mode.")
-    max_finished_age_hours = int(get_env("MAX_FINISHED_AGE_HOURS", "168"))
+    max_finished_age_hours = get_env_int("MAX_FINISHED_AGE_HOURS", 168)
     debug_fotmob_payload = env_as_bool("DEBUG_FOTMOB_PAYLOAD", default=False)
-    fast_window_before_minutes = int(get_env("FAST_WINDOW_BEFORE_MINUTES", "60"))
-    fast_window_after_minutes = int(get_env("FAST_WINDOW_AFTER_MINUTES", "30"))
-    expected_match_duration_minutes = int(get_env("EXPECTED_MATCH_DURATION_MINUTES", "120"))
-    slow_poll_interval_minutes = int(get_env("SLOW_POLL_INTERVAL_MINUTES", "30"))
+    fast_window_before_minutes = get_env_int("FAST_WINDOW_BEFORE_MINUTES", 60)
+    fast_window_after_minutes = get_env_int("FAST_WINDOW_AFTER_MINUTES", 30)
+    expected_match_duration_minutes = get_env_int("EXPECTED_MATCH_DURATION_MINUTES", 120)
+    slow_poll_interval_minutes = get_env_int("SLOW_POLL_INTERVAL_MINUTES", 30)
     test_message = os.getenv("DISCORD_TEST_MESSAGE", "").strip()
 
     if not webhook_url and not dry_run:
@@ -1311,6 +1347,9 @@ def run() -> int:
             return 0
 
         details = fetch_match_details(match_id)
+        if details is None:
+            print(f"[warn] Recap unavailable (matchDetails blocked). Skipping recap for matchId={match_id}")
+            return 0
 
         if debug_fotmob_payload:
             log_match_details_presence(details)
