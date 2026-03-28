@@ -1365,7 +1365,14 @@ def run() -> int:
             print("Posted test message to Discord.")
         return 0
 
-    fixtures = fetch_team_fixtures(team_id)
+    try:
+        fixtures = fetch_team_fixtures(team_id)
+    except RuntimeError as exc:
+        print(
+            "[warn] Unable to fetch fixtures from FotMob; skipping this run without failing job. "
+            f"team_id={team_id}, error={exc}"
+        )
+        return 0
 
     if send_latest_finished_match_now:
         latest_match = find_latest_finished_match(fixtures, max_finished_age_hours=max_finished_age_hours)

@@ -793,6 +793,23 @@ class TestMatchDayBot(unittest.TestCase):
         os.environ.pop("DRY_RUN", None)
         os.environ.pop("DISCORD_TEST_MESSAGE", None)
 
+    def test_run_returns_zero_when_fixtures_fetch_fails(self):
+        os.environ["DRY_RUN"] = "true"
+
+        with patch.object(
+            matchday_bot,
+            "fetch_team_fixtures",
+            side_effect=RuntimeError("Unable to fetch team fixtures for team_id=1186081"),
+        ), patch("builtins.print") as mock_print:
+            code = matchday_bot.run()
+
+        self.assertEqual(code, 0)
+        joined = " ".join(str(call.args[0]) for call in mock_print.call_args_list if call.args)
+        self.assertIn("Unable to fetch fixtures from FotMob; skipping this run without failing job.", joined)
+        self.assertIn("team_id=1186081", joined)
+
+        os.environ.pop("DRY_RUN", None)
+
     def test_fetch_match_details_debug_logs_non_json_preview(self):
         os.environ["DEBUG_FOTMOB_PAYLOAD"] = "true"
         response = _DummyHTTPResponse(b"<html>blocked</html>", status=200, content_type="text/html")
