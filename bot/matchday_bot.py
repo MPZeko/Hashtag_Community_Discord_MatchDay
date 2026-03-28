@@ -16,7 +16,10 @@ from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
 
 FOTMOB_TEAM_FIXTURES_URL = "https://www.fotmob.com/api/teams"
+FOTMOB_TEAM_FIXTURES_FALLBACK_URL = "https://www.fotmob.com/api/teams/fixtures"
 FOTMOB_MATCH_DETAILS_URL = "https://www.fotmob.com/api/matchDetails"
+FOTMOB_TEAM_SEARCH_URL = "https://www.fotmob.com/api/searchapi/suggest"
+FOTMOB_TEAM_SEARCH_FALLBACK_URL = "https://www.fotmob.com/api/search/suggest"
 STATE_FILE = Path(".state/posted_events.json")
 LONDON_TZ = ZoneInfo("Europe/London")
 DEFAULT_HEADERS = {
@@ -130,11 +133,105 @@ def _request_json(
 
 
 def fetch_team_fixtures(team_id: int) -> dict[str, Any]:
-    return _request_json(
-        FOTMOB_TEAM_FIXTURES_URL,
-        params={"id": team_id, "timezone": "Europe/London", "ccode3": "GBR"},
-        headers=DEFAULT_HEADERS,
-    )
+    request_candidates: list[tuple[str, dict[str, Any]]] = [
+        (
+            FOTMOB_TEAM_FIXTURES_URL,
+            {"id": team_id, "timezone": "Europe/London", "ccode3": "GBR"},
+        ),
+        (
+            FOTMOB_TEAM_FIXTURES_FALLBACK_URL,
+            {"id": team_id, "timezone": "Europe/London", "ccode3": "GBR"},
+        ),
+        (
+            FOTMOB_TEAM_FIXTURES_FALLBACK_URL,
+            {"teamId": team_id, "timezone": "Europe/London", "ccode3": "GBR"},
+        ),
+    ]
+
+    last_error: RuntimeError | None = None
+    for url, params in request_candidates:
+        try:
+            payload = _request_json(url, params=params, headers=DEFAULT_HEADERS)
+        except RuntimeError as exc:
+            last_error = exc
+            print(f"[warn] FotMob fixtures request failed url={url} params={params}: {exc}")
+            continue
+
+        fixtures = payload.get("fixtures", {}) if isinstance(payload, dict) else {}
+        all_fixtures = fixtures.get("allFixtures", {}) if isinstance(fixtures, dict) else {}
+        items = all_fixtures.get("fixtures", []) if isinstance(all_fixtures, dict) else []
+        if isinstance(items, list):
+            return payload
+
+        print(f"[warn] FotMob fixtures payload had unexpected shape url={url} params={params}")
+
+    if last_error is not None:
+        raise RuntimeError(f"Unable to fetch team fixtures for team_id={team_id}") from last_error
+
+    raise RuntimeError(f"Unable to fetch team fixtures for team_id={team_id}: no valid payload")
+
+
+def _normalize_name(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", value.lower())
+
+
+def _extract_candidate_teams(payload: Any) -> list[tuple[int, str]]:
+    candidates: list[tuple[int, str]] = []
+
+    def walk(node: Any) -> None:
+        if isinstance(node, dict):
+            raw_id = node.get("id")
+            raw_name = node.get("name") or node.get("displayName") or node.get("teamName")
+            if raw_id is not None and raw_name:
+                try:
+                    parsed_id = int(raw_id)
+                    candidates.append((parsed_id, str(raw_name)))
+                except (TypeError, ValueError):
+                    pass
+            for value in node.values():
+                walk(value)
+            return
+
+        if isinstance(node, list):
+            for item in node:
+                walk(item)
+
+    walk(payload)
+    return candidates
+
+
+def discover_team_id(team_name: str) -> int | None:
+    query = team_name.strip()
+    if not query:
+        return None
+
+    norm_target = _normalize_name(query)
+    request_candidates = [
+        (FOTMOB_TEAM_SEARCH_URL, {"term": query}),
+        (FOTMOB_TEAM_SEARCH_FALLBACK_URL, {"term": query}),
+    ]
+
+    for url, params in request_candidates:
+        try:
+            payload = _request_json(url, params=params, headers=DEFAULT_HEADERS)
+        except RuntimeError as exc:
+            print(f"[warn] FotMob team search failed url={url} params={params}: {exc}")
+            continue
+
+        candidates = _extract_candidate_teams(payload)
+        if not candidates:
+            continue
+
+        for team_id, name in candidates:
+            if _normalize_name(name) == norm_target:
+                return team_id
+
+        for team_id, name in candidates:
+            norm_name = _normalize_name(name)
+            if norm_target in norm_name or norm_name in norm_target:
+                return team_id
+
+    return None
 
 
 def fetch_match_details(match_id: str) -> dict[str, Any] | None:
@@ -1303,6 +1400,7 @@ def run() -> int:
     dry_run = env_as_bool("DRY_RUN", default=False)
     webhook_url = os.getenv("DISCORD_WEBHOOK_URL")
     team_id = get_env_int("TEAM_ID", 1186081)
+    team_name = get_env("TEAM_NAME", "Hashtag United") or "Hashtag United"
     prematch_window_minutes = get_env_int("PREMATCH_WINDOW_MINUTES", 120)
     match_lookahead_hours = get_env_int("MATCH_LOOKAHEAD_HOURS", 24)
     advance_notice_hours = get_env_int("ADVANCE_NOTICE_HOURS", match_lookahead_hours)
@@ -1333,7 +1431,30 @@ def run() -> int:
             print("Posted test message to Discord.")
         return 0
 
-    fixtures = fetch_team_fixtures(team_id)
+    try:
+        fixtures = fetch_team_fixtures(team_id)
+    except RuntimeError as exc:
+        resolved_team_id = discover_team_id(team_name)
+        if resolved_team_id is not None and resolved_team_id != team_id:
+            print(
+                "[warn] Fixtures fetch failed for configured TEAM_ID. "
+                f"Retrying with discovered team id={resolved_team_id} from TEAM_NAME='{team_name}'."
+            )
+            try:
+                fixtures = fetch_team_fixtures(resolved_team_id)
+                team_id = resolved_team_id
+            except RuntimeError as retry_exc:
+                print(
+                    "[warn] Unable to fetch fixtures from FotMob; skipping this run without failing job. "
+                    f"team_id={team_id}, discovered_team_id={resolved_team_id}, error={retry_exc}"
+                )
+                return 0
+        else:
+            print(
+                "[warn] Unable to fetch fixtures from FotMob; skipping this run without failing job. "
+                f"team_id={team_id}, error={exc}"
+            )
+            return 0
 
     if send_latest_finished_match_now:
         latest_match = find_latest_finished_match(fixtures, max_finished_age_hours=max_finished_age_hours)

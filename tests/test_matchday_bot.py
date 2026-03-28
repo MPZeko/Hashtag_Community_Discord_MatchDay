@@ -20,12 +20,14 @@ from bot.matchday_bot import (
     find_next_upcoming_match,
     find_latest_finished_match,
     fetch_match_details,
+    fetch_team_fixtures,
     get_recap_team_context,
     load_state,
     match_score,
     parse_goal_events,
     parse_recap_goals,
     extract_goals,
+    discover_team_id,
     save_state,
     should_run_event_pipeline,
 )
@@ -131,6 +133,44 @@ class _DummyHTTPResponse:
 
 
 class TestMatchDayBot(unittest.TestCase):
+    def test_discover_team_id_exact_name_match(self):
+        payload = {
+            "suggestions": [
+                {"id": 101, "name": "Another Team"},
+                {"id": 202, "name": "Hashtag United"},
+            ]
+        }
+        with patch.object(matchday_bot, "_request_json", return_value=payload):
+            team_id = discover_team_id("Hashtag United")
+        self.assertEqual(team_id, 202)
+
+    def test_fetch_team_fixtures_falls_back_after_primary_404(self):
+        calls = []
+
+        def fake_request_json(url, params=None, body=None, headers=None):
+            calls.append((url, params))
+            if len(calls) == 1:
+                raise RuntimeError("HTTP request failed: HTTP Error 404: Not Found")
+            return {"fixtures": {"allFixtures": {"fixtures": []}}}
+
+        with patch.object(matchday_bot, "_request_json", side_effect=fake_request_json):
+            payload = fetch_team_fixtures(1186081)
+
+        self.assertEqual(payload, {"fixtures": {"allFixtures": {"fixtures": []}}})
+        self.assertEqual(calls[0][0], "https://www.fotmob.com/api/teams")
+        self.assertEqual(calls[1][0], "https://www.fotmob.com/api/teams/fixtures")
+
+    def test_fetch_team_fixtures_raises_when_all_candidates_fail(self):
+        with patch.object(
+            matchday_bot,
+            "_request_json",
+            side_effect=RuntimeError("HTTP request failed: HTTP Error 404: Not Found"),
+        ):
+            with self.assertRaises(RuntimeError) as exc:
+                fetch_team_fixtures(1186081)
+
+        self.assertIn("Unable to fetch team fixtures", str(exc.exception))
+
     def test_builds_prematch_event(self):
         fixtures = _fixture(_base_match(minutes_from_now=30))
         events = build_events(fixtures, 1186081, prematch_window_minutes=120)
@@ -764,6 +804,48 @@ class TestMatchDayBot(unittest.TestCase):
 
         os.environ.pop("DRY_RUN", None)
         os.environ.pop("DISCORD_TEST_MESSAGE", None)
+
+    def test_run_returns_zero_when_fixtures_fetch_fails(self):
+        os.environ["DRY_RUN"] = "true"
+
+        with patch.object(
+            matchday_bot,
+            "fetch_team_fixtures",
+            side_effect=RuntimeError("Unable to fetch team fixtures for team_id=1186081"),
+        ), patch("builtins.print") as mock_print:
+            code = matchday_bot.run()
+
+        self.assertEqual(code, 0)
+        joined = " ".join(str(call.args[0]) for call in mock_print.call_args_list if call.args)
+        self.assertIn("Unable to fetch fixtures from FotMob; skipping this run without failing job.", joined)
+        self.assertIn("team_id=1186081", joined)
+
+        os.environ.pop("DRY_RUN", None)
+
+    def test_run_retries_with_discovered_team_id_when_configured_id_fails(self):
+        os.environ["DRY_RUN"] = "true"
+        os.environ["TEAM_NAME"] = "Hashtag United"
+        discovered_fixtures = _fixture(_base_match(minutes_from_now=45, match_id=3030))
+
+        def fake_fetch(team_id):
+            if team_id == 1186081:
+                raise RuntimeError("Unable to fetch team fixtures for team_id=1186081")
+            if team_id == 424242:
+                return discovered_fixtures
+            raise AssertionError(f"Unexpected team id {team_id}")
+
+        with patch.object(matchday_bot, "fetch_team_fixtures", side_effect=fake_fetch), \
+             patch.object(matchday_bot, "discover_team_id", return_value=424242), \
+             patch.object(matchday_bot, "should_run_event_pipeline", return_value=False), \
+             patch("builtins.print") as mock_print:
+            code = matchday_bot.run()
+
+        self.assertEqual(code, 0)
+        joined = " ".join(str(call.args[0]) for call in mock_print.call_args_list if call.args)
+        self.assertIn("Retrying with discovered team id=424242", joined)
+
+        os.environ.pop("DRY_RUN", None)
+        os.environ.pop("TEAM_NAME", None)
 
     def test_fetch_match_details_debug_logs_non_json_preview(self):
         os.environ["DEBUG_FOTMOB_PAYLOAD"] = "true"

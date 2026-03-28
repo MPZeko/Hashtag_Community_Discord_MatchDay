@@ -26,6 +26,7 @@ Automated bot that fetches match data from FotMob for **Hashtag United** and pos
 ```bash
 export DISCORD_WEBHOOK_URL="https://discord.com/api/webhooks/..."
 export TEAM_ID="1186081"  # optional
+export TEAM_NAME="Hashtag United"  # optional fallback if TEAM_ID is outdated
 export PREMATCH_WINDOW_MINUTES="120"  # optional
 export MATCH_LOOKAHEAD_HOURS="24"  # optional
 export SEND_NEXT_MATCH_NOW="false"  # optional
@@ -87,6 +88,7 @@ Repository secret required:
 Optional repository variables:
 
 - `TEAM_ID`
+- `TEAM_NAME`
 - `PREMATCH_WINDOW_MINUTES`
 - `MATCH_LOOKAHEAD_HOURS`
 
