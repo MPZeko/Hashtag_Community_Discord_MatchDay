@@ -20,6 +20,7 @@ from bot.matchday_bot import (
     find_next_upcoming_match,
     find_latest_finished_match,
     fetch_match_details,
+    fetch_team_fixtures,
     get_recap_team_context,
     load_state,
     match_score,
@@ -131,6 +132,33 @@ class _DummyHTTPResponse:
 
 
 class TestMatchDayBot(unittest.TestCase):
+    def test_fetch_team_fixtures_falls_back_after_primary_404(self):
+        calls = []
+
+        def fake_request_json(url, params=None, body=None, headers=None):
+            calls.append((url, params))
+            if len(calls) == 1:
+                raise RuntimeError("HTTP request failed: HTTP Error 404: Not Found")
+            return {"fixtures": {"allFixtures": {"fixtures": []}}}
+
+        with patch.object(matchday_bot, "_request_json", side_effect=fake_request_json):
+            payload = fetch_team_fixtures(1186081)
+
+        self.assertEqual(payload, {"fixtures": {"allFixtures": {"fixtures": []}}})
+        self.assertEqual(calls[0][0], "https://www.fotmob.com/api/teams")
+        self.assertEqual(calls[1][0], "https://www.fotmob.com/api/teams/fixtures")
+
+    def test_fetch_team_fixtures_raises_when_all_candidates_fail(self):
+        with patch.object(
+            matchday_bot,
+            "_request_json",
+            side_effect=RuntimeError("HTTP request failed: HTTP Error 404: Not Found"),
+        ):
+            with self.assertRaises(RuntimeError) as exc:
+                fetch_team_fixtures(1186081)
+
+        self.assertIn("Unable to fetch team fixtures", str(exc.exception))
+
     def test_builds_prematch_event(self):
         fixtures = _fixture(_base_match(minutes_from_now=30))
         events = build_events(fixtures, 1186081, prematch_window_minutes=120)
