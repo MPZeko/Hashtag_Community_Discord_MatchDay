@@ -16,6 +16,7 @@ from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
 
 FOTMOB_TEAM_FIXTURES_URL = "https://www.fotmob.com/api/teams"
+FOTMOB_TEAM_FIXTURES_FALLBACK_URL = "https://www.fotmob.com/api/teams/fixtures"
 FOTMOB_MATCH_DETAILS_URL = "https://www.fotmob.com/api/matchDetails"
 STATE_FILE = Path(".state/posted_events.json")
 LONDON_TZ = ZoneInfo("Europe/London")
@@ -130,11 +131,42 @@ def _request_json(
 
 
 def fetch_team_fixtures(team_id: int) -> dict[str, Any]:
-    return _request_json(
-        FOTMOB_TEAM_FIXTURES_URL,
-        params={"id": team_id, "timezone": "Europe/London", "ccode3": "GBR"},
-        headers=DEFAULT_HEADERS,
-    )
+    request_candidates: list[tuple[str, dict[str, Any]]] = [
+        (
+            FOTMOB_TEAM_FIXTURES_URL,
+            {"id": team_id, "timezone": "Europe/London", "ccode3": "GBR"},
+        ),
+        (
+            FOTMOB_TEAM_FIXTURES_FALLBACK_URL,
+            {"id": team_id, "timezone": "Europe/London", "ccode3": "GBR"},
+        ),
+        (
+            FOTMOB_TEAM_FIXTURES_FALLBACK_URL,
+            {"teamId": team_id, "timezone": "Europe/London", "ccode3": "GBR"},
+        ),
+    ]
+
+    last_error: RuntimeError | None = None
+    for url, params in request_candidates:
+        try:
+            payload = _request_json(url, params=params, headers=DEFAULT_HEADERS)
+        except RuntimeError as exc:
+            last_error = exc
+            print(f"[warn] FotMob fixtures request failed url={url} params={params}: {exc}")
+            continue
+
+        fixtures = payload.get("fixtures", {}) if isinstance(payload, dict) else {}
+        all_fixtures = fixtures.get("allFixtures", {}) if isinstance(fixtures, dict) else {}
+        items = all_fixtures.get("fixtures", []) if isinstance(all_fixtures, dict) else []
+        if isinstance(items, list):
+            return payload
+
+        print(f"[warn] FotMob fixtures payload had unexpected shape url={url} params={params}")
+
+    if last_error is not None:
+        raise RuntimeError(f"Unable to fetch team fixtures for team_id={team_id}") from last_error
+
+    raise RuntimeError(f"Unable to fetch team fixtures for team_id={team_id}: no valid payload")
 
 
 def fetch_match_details(match_id: str) -> dict[str, Any] | None:
@@ -1333,7 +1365,14 @@ def run() -> int:
             print("Posted test message to Discord.")
         return 0
 
-    fixtures = fetch_team_fixtures(team_id)
+    try:
+        fixtures = fetch_team_fixtures(team_id)
+    except RuntimeError as exc:
+        print(
+            "[warn] Unable to fetch fixtures from FotMob; skipping this run without failing job. "
+            f"team_id={team_id}, error={exc}"
+        )
+        return 0
 
     if send_latest_finished_match_now:
         latest_match = find_latest_finished_match(fixtures, max_finished_age_hours=max_finished_age_hours)
